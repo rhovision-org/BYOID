@@ -32,10 +32,47 @@ Historical related work includes the earlier [DigitalLifeCollective/byoid](https
 3. Provide reference integrations (OpenID Connect provider/relying party, OAuth2, etc.) that respect user control.
 4. Document the architecture and make the system easy for ordinary users and communities to adopt.
 
+## Live demo
+
+**[jimscarver.github.io/BYOID](https://jimscarver.github.io/BYOID/)**
+
+The GitHub Pages build is a browser-only demo. DID keys, credentials, selective
+disclosure and verification are real and run locally in your browser; the
+public rholo anchor is simulated in local storage so the page works without a
+server. The footer and banner label this clearly.
+
+## Run the full POC locally
+
+The Node app performs live anchor reads and writes against the rholo playground.
+
+```bash
+npm install
+npm start          # http://127.0.0.1:3000
+npm test           # 22 unit tests
+```
+
+No credentials are required. Google, GitHub and Facebook run in demo mode until
+you set their OAuth client id/secret pairs in `.env` (see `.env.example`).
+
+### What the POC demonstrates
+
+1. A P-256 keypair and `did:byoid` identifier generated in the browser; the
+   private key never leaves IndexedDB.
+2. A signed, hash-linked DID event log anchored at a public rholo name.
+3. Demo or live OAuth linking, with the link agent signing hash-only
+   attestations.
+4. Credentials signed in the browser with selective disclosure of handle,
+   email, verification status and date.
+5. A verifier that resolves the issuer DID, checks the event chain, attestations,
+   disclosed-field hashes and revocations using the same shared code as the
+   server.
+
+Design notes: [architecture](docs/architecture.md) ·
+[DID method draft](docs/did-method.md).
+
 ## Getting Started
 
-This repository is in early stages. Initial scaffolding and design documents will be added here.
-
+The repository now contains the POC above plus the original design documents.
 Contributions, issues, and discussions are welcome.
 
 ## License

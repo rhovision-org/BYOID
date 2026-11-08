@@ -1,0 +1,21 @@
+{
+  "name": "byoid-poc",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "BYOID — self-sovereign identity POC anchored on the rholo playground, with Google/GitHub/Facebook linking.",
+  "engines": {
+    "node": ">=20.11"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node --test",
+    "smoke:live": "node scripts/smoke-live.js"
+  },
+  "dependencies": {
+    "@noble/curves": "1.9.7",
+    "@noble/hashes": "1.8.0",
+    "bs58": "6.0.0"
+  }
+}

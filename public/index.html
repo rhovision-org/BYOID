@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="BYOID — bring your Google, GitHub and Facebook accounts together under one self-sovereign identity anchored on the rholo playground."
+    />
+    <meta name="color-scheme" content="light" />
+    <title>BYOID — one identity, many accounts, yours</title>
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="header-inner">
+        <a class="brand" href="./" data-action="tab" data-tab="wallet" aria-label="BYOID home">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 32 32" fill="none">
+              <path d="M16 3.5 27 9.2v13.6L16 28.5 5 22.8V9.2L16 3.5Z" stroke="currentColor" stroke-width="1.6" />
+              <circle cx="16" cy="14" r="3.2" stroke="currentColor" stroke-width="1.6" />
+              <path d="M16 17.2v6.2M12.8 20.4h6.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+            </svg>
+          </span>
+          <span class="brand-text">
+            <strong>BYOID</strong>
+            <small>Bring Your Own Identity</small>
+          </span>
+        </a>
+        <div class="header-meta">
+          <a class="chain-pill" id="chain-pill" href="#chain" data-action="tab" data-tab="chain">
+            <span class="dot" aria-hidden="true"></span>
+            <span id="chain-pill-text">rholo playground</span>
+          </a>
+          <span class="pill pill-demo" id="mode-pill">demo identities</span>
+          <button class="icon-btn" data-action="open-help" aria-label="How this POC works" title="How this POC works">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.7" />
+              <path d="M9.6 9.3a2.5 2.5 0 1 1 3.7 2.2c-.8.5-1.3 1-1.3 1.9" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
+              <circle cx="12" cy="17" r="1" fill="currentColor" />
+            </svg>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <div class="static-banner" id="static-banner" hidden>
+      <strong>GitHub Pages demo.</strong>
+      Your DID key and credentials are real and stay in this browser. Chain anchoring is simulated
+      locally — <a href="https://github.com/jimscarver/BYOID">run the Node app</a> for live rholo writes.
+    </div>
+
+    <main class="layout">
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow"><span class="eyebrow-line"></span> A self-sovereign identity POC on rholo</p>
+          <h1>One identity.<br />Many accounts. <em>Yours.</em></h1>
+          <p class="hero-lede">
+            Connect Google, GitHub and Facebook. BYOID welds them into a single
+            <span class="mono-inline">did:byoid</span> anchored on the rholo playground — then lets you prove
+            only what you choose, from a credential signed in your own browser.
+          </p>
+          <div class="hero-actions">
+            <button class="btn btn-primary" data-action="hero-start">Start with your identity</button>
+            <button class="btn btn-ghost" data-action="tab" data-tab="verify">Verify a presentation</button>
+          </div>
+          <p class="hero-note">
+            No sign-up. No password. The playground is a public dev chain, so treat everything here as test data.
+          </p>
+        </div>
+        <div class="hero-visual" aria-hidden="true">
+          <div class="orbit orbit-one"></div>
+          <div class="orbit orbit-two"></div>
+          <div class="hero-card">
+            <div class="hero-card-top">
+              <span class="mini-label">SELF-SOVEREIGN ID</span>
+              <span class="mini-status">browser-held key</span>
+            </div>
+            <div class="hero-did" id="hero-did">did:byoid:z…</div>
+            <div class="hero-provider-row">
+              <span class="provider-dot google-dot">G</span>
+              <span class="provider-connect"></span>
+              <span class="provider-dot github-dot">GH</span>
+              <span class="provider-connect"></span>
+              <span class="provider-dot facebook-dot">f</span>
+            </div>
+            <div class="hero-card-foot">
+              <span>one anchor</span>
+              <span class="mono-inline" id="hero-anchor">byoid:did:z…</span>
+            </div>
+          </div>
+          <div class="floating-chip chip-chain">
+            <span class="dot"></span> rholo playground
+          </div>
+          <div class="floating-chip chip-proof">selective disclosure</div>
+        </div>
+      </section>
+
+      <div class="stepper" id="stepper" aria-label="Progress"></div>
+
+      <nav class="tabs" role="tablist" aria-label="BYOID workspaces">
+        <button class="tab is-active" role="tab" aria-selected="true" data-action="tab" data-tab="wallet">
+          <span class="tab-num">01</span> Wallet
+        </button>
+        <button class="tab" role="tab" aria-selected="false" data-action="tab" data-tab="verify">
+          <span class="tab-num">02</span> Verify
+        </button>
+        <button class="tab" role="tab" aria-selected="false" data-action="tab" data-tab="chain">
+          <span class="tab-num">03</span> Chain evidence
+        </button>
+      </nav>
+
+      <section id="view-wallet" class="view" role="tabpanel">
+        <div id="wallet-root">
+          <div class="card loading-card">
+            <div class="skeleton skeleton-title"></div>
+            <div class="skeleton skeleton-line"></div>
+            <div class="skeleton skeleton-line short"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-verify" class="view" role="tabpanel" hidden>
+        <div class="verify-grid">
+          <div class="card verify-input-card">
+            <div class="card-head">
+              <div>
+                <p class="eyebrow">Relying party</p>
+                <h2>Verify a presentation</h2>
+              </div>
+              <span class="pill pill-quiet">runs in your browser</span>
+            </div>
+            <p class="card-lede">
+              Paste a BYOID presentation JSON, drop a file, or present credentials from your wallet. Verification
+              resolves the issuer's DID from rholo, checks the signature, the hash-linked event log, each provider
+              attestation, and the revocation list.
+            </p>
+            <label class="field-label" for="presentation-input">Presentation JSON</label>
+            <textarea
+              id="presentation-input"
+              class="code-input"
+              spellcheck="false"
+              placeholder='{ "@context": ["https://www.w3.org/2018/credentials/v1"], "type": ["VerifiablePresentation", "BYOIDPresentation"], … }'
+            ></textarea>
+            <div class="verify-actions">
+              <button class="btn btn-primary" data-action="verify-paste">Verify presentation</button>
+              <button class="btn btn-secondary" data-action="present-from-wallet">Present from my wallet</button>
+              <button class="btn btn-ghost" data-action="clear-presentation">Clear</button>
+            </div>
+            <div class="drop-hint" id="drop-hint">
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M12 16V4m0 0 4 4m-4-4L8 8" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" />
+                <path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
+              </svg>
+              drop a <span class="mono-inline">.json</span> presentation anywhere in this card
+            </div>
+            <div class="privacy-note">
+              <span class="lock-icon" aria-hidden="true">⌁</span>
+              Presentation verification is local. The document is sent only to your own BYOID server, and never
+              stored by it.
+            </div>
+          </div>
+
+          <div class="verify-result-column" id="verify-result">
+            <div class="card empty-card">
+              <div class="empty-icon">◎</div>
+              <h3>Nothing verified yet</h3>
+              <p>
+                A verified presentation will show a green banner, every check that passed, and the exact claims the
+                holder chose to reveal.
+              </p>
+              <button class="btn btn-ghost btn-sm" data-action="open-help">What does the verifier check?</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-chain" class="view" role="tabpanel" hidden>
+        <div id="chain-root">
+          <div class="card loading-card">
+            <div class="skeleton skeleton-title"></div>
+            <div class="skeleton skeleton-line"></div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="footer-inner">
+        <div class="footer-brand">
+          <span class="brand-mark small" aria-hidden="true">
+            <svg viewBox="0 0 32 32" fill="none">
+              <path d="M16 3.5 27 9.2v13.6L16 28.5 5 22.8V9.2L16 3.5Z" stroke="currentColor" stroke-width="1.6" />
+              <circle cx="16" cy="14" r="3.2" stroke="currentColor" stroke-width="1.6" />
+              <path d="M16 17.2v6.2M12.8 20.4h6.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+            </svg>
+          </span>
+          <span>BYOID POC · did:byoid draft · anchored on <a href="https://github.com/rhovision-org/rholo" target="_blank" rel="noreferrer">rholo</a></span>
+        </div>
+        <div class="footer-links">
+          <button class="link-btn" data-action="open-help">How it works</button>
+          <a id="api-config-link" href="/api/config" target="_blank" rel="noreferrer">API config</a>
+          <a href="https://playground.rhobot.net/api/v1/status" target="_blank" rel="noreferrer">Playground status</a>
+        </div>
+      </div>
+      <p class="footer-fine">
+        Test data only. The rholo playground may reset. Public names are public: never put an email, handle or
+        secret in an event payload. BYOID keeps them in your wallet and in credentials you choose to share.
+      </p>
+    </footer>
+
+    <div id="toasts" class="toasts" aria-live="polite" aria-atomic="false"></div>
+    <div id="modal-root"></div>
+    <div id="progress-root"></div>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
