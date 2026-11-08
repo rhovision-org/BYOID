@@ -8,8 +8,8 @@ in demo mode by design.
 The provider credentials are tied to your Google Cloud, GitHub, Meta, and Apple
 Developer accounts. BYOID cannot register or obtain them automatically. Create
 the provider apps below, then install the resulting values on rhobot-2 in
-`/etc/byoid/byoid.env` (or in a local `.env` for development); `npm run oauth:check` reports what is still missing without printing any
-secret.
+`/etc/byoid/byoid.env` (or in a local `.env` for development).
+`npm run oauth:check` reports what is still missing without printing any secret.
 
 ## Hosted production origin
 
