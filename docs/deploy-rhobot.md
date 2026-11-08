@@ -90,7 +90,9 @@ labelled demos.
 
 ## First-time host setup
 
-Run as root on `rhobot-2` (`ssh -i ~/.ssh/id_droplet root@rhobot.net`).
+Run the provisioning commands as root on `rhobot-2`
+(`ssh -i ~/.ssh/id_droplet root@rhobot.net`). The release install and switch
+are run from the workstation.
 
 1. Create the service account and persistent directories:
 
@@ -101,46 +103,78 @@ Run as root on `rhobot-2` (`ssh -i ~/.ssh/id_droplet root@rhobot.net`).
    install -d -m 0750 /etc/byoid
    ```
 
-2. Install the systemd unit and production env template:
+2. Install the systemd unit and production env template. From the repository
+   checkout on the workstation:
 
    ```bash
-   install -m 0644 /opt/byoid/releases/<commit>/deploy/byoid.service /etc/systemd/system/byoid.service
-   install -m 0600 /opt/byoid/releases/<commit>/deploy/byoid.env.example /etc/byoid/byoid.env
-   systemctl daemon-reload
+   scp -i ~/.ssh/id_droplet deploy/byoid.service root@rhobot.net:/etc/systemd/system/byoid.service
+   scp -i ~/.ssh/id_droplet deploy/byoid.env.example root@rhobot.net:/tmp/byoid.env
+   ssh -i ~/.ssh/id_droplet root@rhobot.net '
+     install -m 0600 -o root -g root /tmp/byoid.env /etc/byoid/byoid.env
+     rm -f /tmp/byoid.env
+     systemctl daemon-reload
+   '
    ```
 
 3. Confirm Node 22 is available at `/usr/local/lib/node22/bin/node`. The service
    intentionally uses that binary rather than the host's older default Node.
 
-4. Install the Nginx vhost:
+4. Add the DNS record before requesting a certificate:
 
    ```bash
-   install -m 0644 /opt/byoid/releases/<commit>/deploy/nginx/byoid.rhobot.net.conf \
-     /etc/nginx/sites-available/byoid.rhobot.net
-   ln -sfn /etc/nginx/sites-available/byoid.rhobot.net /etc/nginx/sites-enabled/byoid.rhobot.net
-   ```
-
-   The config points at certificate paths that do not exist yet. Issue the
-   certificate with the HTTP vhost temporarily active, then reload:
-
-   ```bash
-   certbot --nginx -d byoid.rhobot.net --non-interactive --agree-tos --redirect
-   nginx -t && systemctl reload nginx
-   ```
-
-5. Create the DNS record if it does not exist:
-
-   ```bash
-   doapi cocloud -X POST /v2/domains/rhobot.net/records \
+   doapi cocloud /v2/domains/rhobot.net/records -X POST \
      -H 'Content-Type: application/json' \
      -d '{"type":"A","name":"byoid","data":"138.197.65.34","ttl":3600}'
+   dig +short byoid.rhobot.net    # expected: 138.197.65.34
    ```
 
-   Verify with `dig +short byoid.rhobot.net`. The public edge is
-   `138.197.65.34` (host `rhobot-2`).
+5. Install the first release and start the service from the workstation:
 
-6. Install the committed release and start the service. A normal deploy from a
-   workstation does steps 1–5's code installation and switch; see below.
+   ```bash
+   ./scripts/deploy-rhobot.sh
+   ```
+
+   That script installs the committed tree into
+   `/opt/byoid/releases/<sha>`, installs production dependencies, links `data`
+   to `/var/lib/byoid`, switches `/opt/byoid/current`, restarts
+   `byoid.service`, and waits for `/healthz`.
+
+6. Install the temporary HTTP vhost, obtain the certificate, then replace it
+   with the TLS vhost:
+
+   ```bash
+   ssh -i ~/.ssh/id_droplet root@rhobot.net '
+     install -m 0644 /opt/byoid/current/deploy/nginx/byoid.rhobot.net.http.conf \
+       /etc/nginx/sites-available/byoid.rhobot.net
+     ln -sfn /etc/nginx/sites-available/byoid.rhobot.net \
+       /etc/nginx/sites-enabled/byoid.rhobot.net
+     nginx -t && systemctl reload nginx
+     certbot --nginx -d byoid.rhobot.net --non-interactive --agree-tos --redirect
+     install -m 0644 /opt/byoid/current/deploy/nginx/byoid.rhobot.net.conf \
+       /etc/nginx/sites-available/byoid.rhobot.net
+     nginx -t && systemctl reload nginx
+     systemctl enable byoid nginx
+   '
+   ```
+
+7. Verify:
+
+   ```bash
+   curl -fsS https://byoid.rhobot.net/healthz
+   curl -fsS https://byoid.rhobot.net/api/config | jq '.providers[] | {id, mode}'
+   ```
+
+## Current production state
+
+As deployed on 2026-11-08:
+
+- `byoid.rhobot.net` A record points to `rhobot-2` (`138.197.65.34`).
+- Let's Encrypt certificate is active; renewal is handled by certbot's timer.
+- `byoid.service` is enabled and binds `127.0.0.1:3100`.
+- Nginx terminates TLS and proxies to the service.
+- All four providers start in demo mode until credentials are installed in
+  `/etc/byoid/byoid.env`. The app itself, chain anchoring, and the OAuth
+  callback machinery are live.
 
 ## Normal deploy
 

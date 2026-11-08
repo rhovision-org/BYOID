@@ -27,7 +27,8 @@ git -C "$repo_root" archive --format=tar HEAD | ssh "${ssh_opts[@]}" "$host" "ta
 ssh "${ssh_opts[@]}" "$host" bash -s <<EOF
 set -euo pipefail
 cd '$release'
-/usr/local/lib/node22/bin/npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+export PATH=/usr/local/lib/node22/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+npm ci --omit=dev --ignore-scripts --no-audit --no-fund
 rm -rf data
 ln -s /var/lib/byoid data
 chown -R root:byoid '$release'
@@ -51,11 +52,10 @@ ssh "${ssh_opts[@]}" "$host" '
   exit 1
 '
 
-# Keep the current release plus four previous ones.
+# Keep the newest release plus four previous ones. The just-deployed release
+# is first after a normal deploy; do not use this prune after a manual rollback
+# without checking the order.
 ssh "${ssh_opts[@]}" "$host" '
-  current=$(readlink -f /opt/byoid/current)
-  find /opt/byoid/releases -mindepth 1 -maxdepth 1 -type d -printf "%T@ %p\n" |
-    sort -rn | awk '{print $2}' | grep -v -F "$current" | tail -n +5 |
-    xargs -r rm -rf
+  ls -1dt /opt/byoid/releases/* | tail -n +6 | xargs -r rm -rf
 '
 echo "[deploy] done: $release"
