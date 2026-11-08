@@ -5,6 +5,12 @@ server. The GitHub Pages build cannot run this flow securely because it cannot
 keep a client secret or sign server-side attestations. The Pages build remains
 in demo mode by design.
 
+The provider credentials are tied to your Google Cloud, GitHub, Meta, and Apple
+Developer accounts. BYOID cannot register or obtain them automatically. Create
+the provider apps below, then give the resulting values to the server through
+`.env`; `npm run oauth:check` reports what is still missing without printing any
+secret.
+
 ## Common settings
 
 ```bash
