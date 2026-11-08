@@ -34,8 +34,8 @@ Historical related work includes the earlier [DigitalLifeCollective/byoid](https
 
 ## Live demo
 
-**[jimscarver.com/BYOID](https://jimscarver.com/BYOID/)**  
-(GitHub Pages project site; `jimscarver.github.io/BYOID` redirects here.)
+**[rhovision-org.github.io/BYOID](https://rhovision-org.github.io/BYOID/)**  
+(Community GitHub Pages project site under `rhovision-org`.)
 
 The GitHub Pages build runs without a Node server but uses the real rholo
 playground. The browser generates a local devnet phlo key, requests test REV

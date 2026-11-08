@@ -10,7 +10,7 @@ import { PROVIDER_CATALOG, PROVIDER_IDS } from '../public/provider-catalog.js';
 
 export { PROVIDER_CATALOG, PROVIDER_IDS };
 
-const USER_AGENT = 'BYOID-POC/0.1 (+https://github.com/jimscarver/BYOID)';
+const USER_AGENT = 'BYOID-POC/0.1 (+https://github.com/rhovision-org/BYOID)';
 
 /** Public provider metadata for the browser (never contains a client secret). */
 export function publicProviderInfo(provider, configured, mode, redirectUri) {

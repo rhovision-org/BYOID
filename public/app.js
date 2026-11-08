@@ -3325,7 +3325,7 @@ async function boot() {
     if (banner) banner.hidden = false;
     const configLink = $('#api-config-link');
     if (configLink) {
-      configLink.href = 'https://github.com/jimscarver/BYOID#readme';
+      configLink.href = 'https://github.com/rhovision-org/BYOID#readme';
       configLink.textContent = 'Project README';
     }
     document.documentElement.dataset.static = 'true';
