@@ -2,18 +2,24 @@
 //
 // The provider catalog itself lives in public/provider-catalog.js so the same
 // metadata can power both this server and the browser-only GitHub Pages demo.
-// Each provider has a live mode (when a client id/secret pair is configured)
-// and a demo mode (a clearly-labelled local simulation) so the POC is usable
-// with zero credentials.
+// Each provider has a live mode (client id/secret, or Apple's Services ID +
+// signing key) and a demo mode (a clearly-labelled local simulation) so the POC
+// is usable with zero credentials.
 
+import { createPrivateKey, sign as nodeSign } from 'node:crypto';
 import { PROVIDER_CATALOG, PROVIDER_IDS } from '../public/provider-catalog.js';
+import { base64url, unb64url, utf8, verifyEs256 } from './crypto.js';
 
 export { PROVIDER_CATALOG, PROVIDER_IDS };
 
 const USER_AGENT = 'BYOID-POC/0.1 (+https://github.com/rhovision-org/BYOID)';
+let appleJwksCache = { at: 0, keys: [] };
 
 /** Public provider metadata for the browser (never contains a client secret). */
 export function publicProviderInfo(provider, configured, mode, redirectUri) {
+  const extraEnv = Object.entries(provider.env)
+    .filter(([key]) => key !== 'clientId' && key !== 'clientSecret')
+    .map(([, value]) => value);
   return {
     id: provider.id,
     name: provider.name,
@@ -24,6 +30,7 @@ export function publicProviderInfo(provider, configured, mode, redirectUri) {
     configure: {
       clientIdEnv: provider.env.clientId,
       clientSecretEnv: provider.env.clientSecret,
+      extraEnv,
       redirectUri,
     },
     mode,
@@ -44,7 +51,11 @@ export function getProvider(providerId) {
 }
 
 /** Build the authorization-code URL for a provider. */
-export function buildAuthorizationUrl(provider, cfg, { state, codeChallenge, redirectUri }) {
+export function buildAuthorizationUrl(
+  provider,
+  cfg,
+  { state, codeChallenge, redirectUri, nonce },
+) {
   const url = new URL(provider.authorizeUrl);
   url.searchParams.set('client_id', cfg.clientId);
   url.searchParams.set('redirect_uri', redirectUri);
@@ -54,6 +65,10 @@ export function buildAuthorizationUrl(provider, cfg, { state, codeChallenge, red
   if (provider.pkce && codeChallenge) {
     url.searchParams.set('code_challenge', codeChallenge);
     url.searchParams.set('code_challenge_method', 'S256');
+  }
+  if (provider.id === 'apple') {
+    url.searchParams.set('response_mode', provider.responseMode || 'form_post');
+    if (nonce) url.searchParams.set('nonce', nonce);
   }
   if (provider.id === 'google') {
     url.searchParams.set('access_type', 'online');
@@ -77,12 +92,40 @@ async function readJsonResponse(res, label) {
   return body;
 }
 
+/** Generate the short-lived JWT Apple requires as its OAuth client secret. */
+export function appleClientSecret(provider, cfg, { now = Math.floor(Date.now() / 1000) } = {}) {
+  if (cfg.clientSecret) return cfg.clientSecret;
+  if (!cfg.applePrivateKey || !cfg.appleTeamId || !cfg.appleKeyId) {
+    throw new Error(
+      'Apple needs APPLE_CLIENT_SECRET, or APPLE_TEAM_ID + APPLE_KEY_ID + APPLE_PRIVATE_KEY.',
+    );
+  }
+  const header = { alg: 'ES256', kid: cfg.appleKeyId };
+  const payload = {
+    iss: cfg.appleTeamId,
+    iat: now,
+    exp: now + 150 * 24 * 60 * 60,
+    aud: provider.issuer || 'https://appleid.apple.com',
+    sub: cfg.clientId,
+  };
+  const signingInput = `${base64url(JSON.stringify(header))}.${base64url(JSON.stringify(payload))}`;
+  const keyText = String(cfg.applePrivateKey).replaceAll('\\n', '\n');
+  const key = createPrivateKey(keyText);
+  const signature = nodeSign('sha256', Buffer.from(signingInput), {
+    key,
+    dsaEncoding: 'ieee-p1363',
+  });
+  return `${signingInput}.${signature.toString('base64url')}`;
+}
+
 /** Exchange an authorization code for tokens. Never returns tokens to the browser. */
 export async function exchangeCode(provider, cfg, { code, codeVerifier, redirectUri, fetchImpl = fetch }) {
+  const clientSecret =
+    provider.id === 'apple' ? appleClientSecret(provider, cfg) : cfg.clientSecret;
   const body = new URLSearchParams({
     code,
     client_id: cfg.clientId,
-    client_secret: cfg.clientSecret,
+    client_secret: clientSecret,
     redirect_uri: redirectUri,
     grant_type: 'authorization_code',
   });
@@ -97,8 +140,93 @@ export async function exchangeCode(provider, cfg, { code, codeVerifier, redirect
   return readJsonResponse(res, `${provider.name} token exchange`);
 }
 
+/** Verify a Sign in with Apple identity token with Apple's rotating JWKS. */
+export async function verifyAppleIdToken(
+  idToken,
+  { clientId, nonce, fetchImpl = fetch, now = Math.floor(Date.now() / 1000) } = {},
+) {
+  const parts = String(idToken || '').split('.');
+  if (parts.length !== 3) throw new Error('Apple returned an invalid identity token');
+  let header;
+  let payload;
+  try {
+    header = JSON.parse(Buffer.from(parts[0], 'base64url').toString('utf8'));
+    payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+  } catch {
+    throw new Error('Apple identity token is not valid base64url JSON');
+  }
+  if (header.alg !== 'ES256' || !header.kid) {
+    throw new Error('Apple identity token uses an unexpected signing algorithm');
+  }
+
+  if (!appleJwksCache.keys.length || Date.now() - appleJwksCache.at > 60 * 60 * 1000) {
+    const response = await fetchImpl('https://appleid.apple.com/auth/keys');
+    const body = await readJsonResponse(response, 'Apple JWKS');
+    appleJwksCache = {
+      at: Date.now(),
+      keys: Array.isArray(body.keys) ? body.keys : [],
+    };
+  }
+  const jwk = appleJwksCache.keys.find((candidate) => candidate.kid === header.kid);
+  if (!jwk) throw new Error('Apple identity token names an unknown signing key');
+  const publicJwk = { kty: jwk.kty, crv: jwk.crv, x: jwk.x, y: jwk.y };
+  const signatureOk = await verifyEs256(
+    publicJwk,
+    utf8(`${parts[0]}.${parts[1]}`),
+    unb64url(parts[2]),
+  );
+  if (!signatureOk) throw new Error('Apple identity token signature does not verify');
+  if (payload.iss !== 'https://appleid.apple.com') {
+    throw new Error('Apple identity token has the wrong issuer');
+  }
+  const audience = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
+  if (!audience.includes(clientId)) {
+    throw new Error('Apple identity token has the wrong audience');
+  }
+  if (!Number.isFinite(payload.exp) || payload.exp <= now) {
+    throw new Error('Apple identity token has expired');
+  }
+  if (nonce && payload.nonce !== nonce) {
+    throw new Error('Apple identity token nonce did not match');
+  }
+  return payload;
+}
+
 /** Fetch and normalize a provider profile. Only normalized fields leave this module. */
 export async function fetchProfile(provider, tokens, { fetchImpl = fetch } = {}) {
+  if (provider.id === 'apple') {
+    if (!tokens.id_token) throw new Error('Apple did not return an identity token');
+    const claims = await verifyAppleIdToken(tokens.id_token, {
+      clientId: tokens.clientId,
+      nonce: tokens.nonce,
+      fetchImpl,
+    });
+    let user = null;
+    if (tokens.user) {
+      try {
+        user = typeof tokens.user === 'string' ? JSON.parse(tokens.user) : tokens.user;
+      } catch {
+        user = null;
+      }
+    }
+    const name = [user?.name?.firstName, user?.name?.lastName].filter(Boolean).join(' ').trim();
+    const email = claims.email || user?.email || null;
+    const handle = email
+      ? String(email).split('@')[0]
+      : name
+        ? name.toLowerCase().replace(/\s+/g, '.')
+        : `apple-${String(claims.sub).slice(0, 8)}`;
+    return {
+      provider: 'apple',
+      subject: String(claims.sub),
+      handle,
+      name,
+      email,
+      emailVerified: claims.email_verified === true || claims.email_verified === 'true',
+      avatarUrl: null,
+    };
+  }
+
   const accessToken = tokens.access_token;
   if (!accessToken) throw new Error(`${provider.name} did not return an access token`);
 

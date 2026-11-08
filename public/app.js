@@ -13,6 +13,7 @@ import {
   EVENT_TYPES,
   finalizeEvent,
   isDid,
+  isRevAddress,
   publicJwkOf,
   sha256B64url,
   shortId,
@@ -37,12 +38,21 @@ import {
   saveSelectedNode,
   validateNodeDraft,
 } from './nodes.js';
+import {
+  accountUrl,
+  generateRevKey,
+  proofCardBody,
+  revKeyFromPrivateKey,
+  signRevProof,
+  verifyProofCard,
+} from './rev-proof.js';
 
 const WALLET_KEY = 'byoid.wallet.v1';
 const TAB_KEY = 'byoid.tab.v1';
 const DB_NAME = 'byoid-poc';
 const DB_STORE = 'keys';
 const PRIVATE_KEY_ID = 'wallet-key';
+const REV_PROOF_KEY_ID = 'rev-proof-key';
 const DEFAULT_ISSUE_FIELDS = {
   handle: true,
   email: false,
@@ -66,6 +76,9 @@ const state = {
   modal: null,
   selectedCredentials: new Set(),
   verifier: { status: 'idle', presentation: null, result: null, error: null },
+  revKey: null,
+  proofQuery: '',
+  proofLookup: { status: 'idle', query: '', result: null, error: null },
   didCache: new Map(),
   toastSeq: 0,
   progressSeq: 0,
@@ -337,6 +350,22 @@ function ensureWalletShape(wallet) {
   wallet.credentials ||= [];
   wallet.receipts ||= [];
   return wallet;
+}
+
+async function ensureRevProofKey() {
+  if (state.revKey) return state.revKey;
+  let key = await idbGet(REV_PROOF_KEY_ID);
+  try {
+    key = key?.privateKeyHex ? revKeyFromPrivateKey(key.privateKeyHex) : null;
+  } catch {
+    key = null;
+  }
+  if (!key) {
+    key = generateRevKey();
+    await idbPut(REV_PROOF_KEY_ID, key);
+  }
+  state.revKey = key;
+  return key;
 }
 
 // ── signing ─────────────────────────────────────────────────────────────────
@@ -780,6 +809,7 @@ async function createIdentity() {
     state.wallet = wallet;
     state.privateKey = pair.privateKey;
     await idbPut(PRIVATE_KEY_ID, pair.privateKey);
+    await ensureRevProofKey().catch(() => {});
     saveWallet();
     renderAll();
     scrollToId('wallet-root');
@@ -923,6 +953,7 @@ async function importWalletFile(file) {
     state.keyError = null;
     state.selectedCredentials = new Set();
     await idbPut(PRIVATE_KEY_ID, privateKey);
+    await ensureRevProofKey().catch(() => {});
     saveWallet();
     state.modal = null;
     renderAll();
@@ -937,9 +968,13 @@ async function clearWallet() {
   if (!window.confirm('Remove this wallet from this browser? Export it first if you want a backup.')) return;
   localStorage.removeItem(WALLET_KEY);
   await idbDelete(PRIVATE_KEY_ID).catch(() => {});
+  await idbDelete(REV_PROOF_KEY_ID).catch(() => {});
   state.wallet = null;
   state.privateKey = null;
   state.keyError = null;
+  state.revKey = null;
+  state.proofQuery = '';
+  state.proofLookup = { status: 'idle', query: '', result: null, error: null };
   state.resolution = null;
   state.selectedCredentials = new Set();
   state.verifier = { status: 'idle', presentation: null, result: null, error: null };
@@ -958,9 +993,13 @@ async function startOverWithNewIdentity() {
   }
   localStorage.removeItem(WALLET_KEY);
   await idbDelete(PRIVATE_KEY_ID).catch(() => {});
+  await idbDelete(REV_PROOF_KEY_ID).catch(() => {});
   state.wallet = null;
   state.privateKey = null;
   state.keyError = null;
+  state.revKey = null;
+  state.proofQuery = '';
+  state.proofLookup = { status: 'idle', query: '', result: null, error: null };
   state.resolution = null;
   state.selectedCredentials = new Set();
   state.verifier = { status: 'idle', presentation: null, result: null, error: null };
@@ -1075,6 +1114,199 @@ async function removeSelectedCustomNode() {
     state.modal.nodeId = state.node?.id || DEFAULT_NODE.id;
     renderModal();
   }
+}
+
+// ── REV proof cards ─────────────────────────────────────────────────────────
+
+function anchoredProofLinks() {
+  return (state.wallet?.links || []).filter((link) => linkIsAnchored(link));
+}
+
+async function buildCurrentProofCard() {
+  const wallet = state.wallet;
+  if (!wallet) throw new Error('Create an identity before publishing proofs.');
+  requireKey();
+  const key = await ensureRevProofKey();
+  const links = anchoredProofLinks();
+  if (!links.length) {
+    throw new Error('Anchor at least one provider link before publishing a proof card.');
+  }
+  const proofs = links.map((link) => {
+    const handle = link.profile?.handle || null;
+    return {
+      provider: link.provider,
+      handle,
+      subjectHash: link.subjectHash,
+      attestation: link.attestation,
+      attestationHash: link.attestationHash,
+      linkEventId: link.event?.id || null,
+      linkedAt: link.linkedAt,
+      demo: Boolean(link.demo || link.profile?.demo),
+    };
+  });
+  const body = proofCardBody({
+    revAddress: key.address,
+    revPublicKey: key.publicKeyHex,
+    did: wallet.did,
+    proofs,
+    network: state.chain?.status?.networkId || null,
+    shardId: state.chain?.status?.shardId || null,
+    agentFingerprint: state.agent?.fingerprint || null,
+  });
+  const bytes = utf8(canonicalize(body));
+  const didSignature = b64url(await signEs256(state.privateKey, bytes));
+  const revSignature = signRevProof(key.privateKeyHex, bytes);
+  return { ...body, didSignature, revSignature };
+}
+
+async function publishRevProofs() {
+  if (!state.wallet) {
+    toast({ kind: 'warn', title: 'Create your identity first', message: 'A REV proof card binds the address to a DID.' });
+    return;
+  }
+  if (!walletCreateAnchored()) {
+    toast({ kind: 'warn', title: 'Anchor your DID first', message: 'Proof cards point at the canonical DID log.' });
+    return;
+  }
+  await withBusy('Signing and anchoring the REV proof card…', async () => {
+    try {
+      const key = await ensureRevProofKey();
+      const card = await buildCurrentProofCard();
+      const response = await api('/api/rev/publish', {
+        method: 'POST',
+        body: { address: key.address, card },
+      });
+      state.wallet.revProof = {
+        address: key.address,
+        card,
+        receipt: response,
+        publishedAt: new Date().toISOString(),
+      };
+      recordReceipt(response);
+      saveWallet();
+      state.proofQuery = key.address;
+      try {
+        await lookupRevProofs(key.address);
+      } catch (error) {
+        state.proofLookup = {
+          status: 'error',
+          query: key.address,
+          error: `Card published, but the lookup failed: ${error.message}`,
+          result: null,
+        };
+      }
+      renderAll();
+      toast({
+        kind: 'ok',
+        title: 'REV proof card published',
+        message: response.blockNumber
+          ? `Anchored in block ${response.blockNumber}.`
+          : 'The card is now readable at its public name.',
+      });
+    } catch (error) {
+      toast({ kind: 'bad', title: 'Could not publish the proof card', message: error.message });
+      renderChain();
+    }
+  });
+}
+
+async function currentAgent() {
+  if (state.agent?.publicJwk) return state.agent;
+  state.agent = await api('/api/agent');
+  return state.agent;
+}
+
+async function lookupRevProofs(address) {
+  const agent = await currentAgent();
+  const response = await api(`/api/rev/${encodeURIComponent(address)}`);
+  const verified = [];
+  const cards = Array.isArray(response.cards) ? response.cards.slice(0, 20) : [];
+  for (const card of cards) {
+    if (!isDid(card?.did)) {
+      verified.push({ ok: false, card, errors: ['card DID is not a did:byoid identifier'], checks: [], proofs: [] });
+      continue;
+    }
+    try {
+      const resolution = await fetchResolution(card.did, { force: true });
+      const result = await verifyProofCard({
+        card,
+        address,
+        resolution,
+        agent,
+      });
+      verified.push({ ...result, card, resolution });
+    } catch (error) {
+      verified.push({ ok: false, card, errors: [error.message], checks: [], proofs: [] });
+    }
+  }
+  const valid =
+    verified
+      .filter((candidate) => candidate.ok)
+      .sort((a, b) => Date.parse(b.card.issuedAt || 0) - Date.parse(a.card.issuedAt || 0))[0] ||
+    null;
+  state.proofLookup = {
+    status: 'done',
+    query: address,
+    error: null,
+    result: {
+      kind: 'rev',
+      address,
+      name: response.name,
+      block: response.block,
+      cards,
+      invalidValues: response.invalid || [],
+      valid,
+      verified,
+    },
+  };
+  renderChain();
+}
+
+async function lookupDidProofs(did) {
+  const resolution = await fetchResolution(did, { force: true });
+  state.proofLookup = {
+    status: 'done',
+    query: did,
+    error: null,
+    result: { kind: 'did', did, resolution },
+  };
+  renderChain();
+}
+
+async function lookupProofsFromInput() {
+  const value = String($('#proof-query')?.value || '').trim();
+  state.proofQuery = value;
+  if (!value) {
+    toast({ kind: 'warn', title: 'Enter a REV address or DID' });
+    return;
+  }
+  if (isRevAddress(value)) {
+    state.proofLookup = { status: 'loading', query: value, error: null, result: null };
+    renderChain();
+    try {
+      await lookupRevProofs(value);
+    } catch (error) {
+      state.proofLookup = { status: 'error', query: value, error: error.message, result: null };
+      renderChain();
+    }
+    return;
+  }
+  if (isDid(value)) {
+    state.proofLookup = { status: 'loading', query: value, error: null, result: null };
+    renderChain();
+    try {
+      await lookupDidProofs(value);
+    } catch (error) {
+      state.proofLookup = { status: 'error', query: value, error: error.message, result: null };
+      renderChain();
+    }
+    return;
+  }
+  toast({
+    kind: 'warn',
+    title: 'That is not a REV address or DID',
+    message: 'Use a base58 REV address, or did:byoid:…',
+  });
 }
 
 // ── provider linking ────────────────────────────────────────────────────────
@@ -1827,7 +2059,7 @@ function renderOnboarding() {
           identifier from its public half. The private key is stored in IndexedDB and is never sent to the server.
         </p>
         <div class="onboarding-points">
-          <div class="onboarding-point"><span class="tick">✓</span><span><strong>One DID.</strong> Google, GitHub and Facebook become linked personas under it, not separate logins.</span></div>
+          <div class="onboarding-point"><span class="tick">✓</span><span><strong>One DID.</strong> Google, GitHub, Facebook and Apple become linked personas under it, not separate logins.</span></div>
           <div class="onboarding-point"><span class="tick">✓</span><span><strong>One anchor.</strong> A signed, hash-linked event log lives at a public name on the rholo playground.</span></div>
           <div class="onboarding-point"><span class="tick">✓</span><span><strong>One proof.</strong> Credentials are signed in your browser and disclose only the fields you tick.</span></div>
         </div>
@@ -2320,6 +2552,186 @@ function renderChainEvent(event) {
   `;
 }
 
+function renderProofItem(proof) {
+  const provider = providerById(proof.provider);
+  const url = accountUrl(proof.provider, proof.handle);
+  const handle = proof.handle || 'hash-only proof';
+  return `
+    <article class="proof-item">
+      <div class="proof-item-main">
+        <span class="proof-provider">${esc(provider?.name || proof.provider)}</span>
+        ${proof.demo ? '<span class="badge badge-warn">demo</span>' : '<span class="badge badge-teal">verified</span>'}
+        <strong>${url ? `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(handle)}</a>` : esc(handle)}</strong>
+      </div>
+      <div class="proof-item-meta">
+        <span>attestation ${esc(shortId(proof.attestationHash || '', 18, 10))}</span>
+        <span>link ${esc(shortId(proof.linkEventId || '', 18, 10))}</span>
+        <span>${esc(fmtDate(proof.linkedAt))}</span>
+      </div>
+    </article>
+  `;
+}
+
+function renderProofChecks(checks) {
+  return `
+    <details class="proof-checks">
+      <summary>${checks.filter((check) => check.ok).length}/${checks.length} checks passed</summary>
+      <ul>
+        ${checks
+          .map(
+            (check) => `
+          <li class="${check.ok ? 'is-ok' : 'is-bad'}">
+            <span class="proof-check-icon">${check.ok ? '✓' : '!'}</span>
+            <span><strong>${esc(check.label)}</strong>${check.detail ? ` <span class="muted">${esc(check.detail)}</span>` : ''}</span>
+          </li>`,
+          )
+          .join('')}
+      </ul>
+    </details>
+  `;
+}
+
+function renderProofLookupResult() {
+  const lookup = state.proofLookup;
+  if (!lookup || lookup.status === 'idle') {
+    return `<div class="proof-empty">Enter a REV address to read its public proof card, or a DID to inspect its hash-only account links.</div>`;
+  }
+  if (lookup.status === 'loading') {
+    return `<div class="proof-empty"><span class="spinner"></span> Reading proofs from rholo…</div>`;
+  }
+  if (lookup.status === 'error') {
+    return `<div class="progress-error">${esc(lookup.error)}</div>`;
+  }
+  const result = lookup.result;
+  if (!result) return '';
+  if (result.kind === 'did') {
+    const resolution = result.resolution;
+    const links = resolution?.links || [];
+    if (!resolution?.status?.valid) {
+      return `<div class="progress-error">The DID log is not valid on this rnode: ${esc((resolution?.status?.errors || []).join(' · ') || 'not found')}</div>`;
+    }
+    return `
+      <div class="proof-result">
+        <div class="proof-result-head">
+          <div><span class="field-label">DID proof index</span><strong class="mono">${esc(result.did)}</strong></div>
+          <span class="badge badge-ok">${links.length} anchored link(s)</span>
+        </div>
+        ${
+          links.length
+            ? `<div class="proof-list">${links
+                .map(
+                  (link) => `
+              <article class="proof-item">
+                <div class="proof-item-main">
+                  <span class="proof-provider">${esc(providerById(link.provider)?.name || link.provider)}</span>
+                  <strong>${esc(shortId(link.subjectHash, 18, 10))}</strong>
+                </div>
+                <div class="proof-item-meta">
+                  <span>attestation ${esc(shortId(link.attestationHash, 18, 10))}</span>
+                  <span>${esc(fmtDate(link.linkedAt))}</span>
+                </div>
+              </article>`,
+                )
+                .join('')}</div>`
+            : '<div class="proof-empty">This DID has no provider links in its canonical log.</div>'
+        }
+        <p class="small muted">DID logs publish only hashes. Publish a REV proof card to disclose provider handles with verifiable attestations.</p>
+      </div>
+    `;
+  }
+  if (result.kind === 'rev') {
+    if (!result.cards.length) {
+      return `<div class="proof-empty">No BYOID proof card is anchored at <span class="mono-inline">${esc(result.name)}</span> on this rnode yet.</div>`;
+    }
+    if (!result.valid) {
+      const reasons = result.verified.flatMap((item) => item.errors || []).slice(0, 8);
+      return `
+        <div class="proof-result">
+          <div class="proof-result-head">
+            <div><span class="field-label">REV proof card</span><strong class="mono">${esc(result.address)}</strong></div>
+            <span class="badge badge-bad">invalid</span>
+          </div>
+          <div class="progress-error">No card at this address passed verification.</div>
+          ${reasons.length ? `<ul class="proof-error-list">${reasons.map((reason) => `<li>${esc(reason)}</li>`).join('')}</ul>` : ''}
+          <p class="small muted">${result.cards.length} candidate card(s); ${result.invalidValues.length} malformed value(s).</p>
+        </div>
+      `;
+    }
+    const card = result.valid.card;
+    const block = result.valid.resolution?.block || result.block;
+    return `
+      <div class="proof-result">
+        <div class="proof-result-head">
+          <div>
+            <span class="field-label">REV proof card · verified</span>
+            <strong class="mono">${esc(result.address)}</strong>
+            <span class="small muted proof-did">DID ${esc(card.did)}</span>
+          </div>
+          <span class="badge badge-ok">${result.valid.proofs.length} proof${result.valid.proofs.length === 1 ? '' : 's'}</span>
+        </div>
+        <div class="proof-card-meta">
+          <span><strong>Network</strong> ${esc(card.network || '—')}</span>
+          <span><strong>Issued</strong> ${esc(fmtDate(card.issuedAt))}</span>
+          <span><strong>Block</strong> ${esc(block?.blockNumber ?? '—')}</span>
+          <span><strong>DID log</strong> ${esc(card.did)}</span>
+        </div>
+        <div class="proof-list">${result.valid.proofs.map(renderProofItem).join('')}</div>
+        ${renderProofChecks(result.valid.checks)}
+        <p class="small muted">The REV key signed this card and its address derives from that key. The DID key signed the same card, and every provider attestation matches an anchored link event.</p>
+      </div>
+    `;
+  }
+  return '';
+}
+
+function renderProofPublisher() {
+  const key = state.revKey;
+  const links = anchoredProofLinks();
+  const canPublish = Boolean(state.wallet && state.privateKey && walletCreateAnchored() && links.length);
+  const hasPublished = Boolean(state.wallet?.revProof?.receipt);
+  return `
+    <div class="card proof-publisher">
+      <div class="card-head">
+        <div><p class="eyebrow">Public proofs · Keybase-style</p><h2>Publish a REV proof address</h2></div>
+        ${key ? '<span class="badge badge-ok">REV key ready</span>' : '<span class="badge badge-quiet">created on publish</span>'}
+      </div>
+      <p class="card-lede">A REV proof card binds a secp256k1 REV address to your DID and lists the provider handles you choose to disclose. It is signed by both keys and anchored on the selected rholo network.</p>
+      ${
+        key
+          ? `<div class="proof-address"><code>${esc(key.address)}</code><button class="btn btn-ghost btn-sm" data-action="copy-rev-address">${uiIcon('copy')} Copy</button></div>`
+          : '<div class="proof-empty">A REV proof key will be generated in this browser when you publish.</div>'
+      }
+      <div class="proof-publish-row">
+        <span class="small muted">${links.length} anchored provider proof${links.length === 1 ? '' : 's'}. Publishing reveals these handles publicly; attestations contain hashes only.</span>
+        <button class="btn btn-primary btn-sm" data-action="publish-rev-proofs" ${canPublish ? '' : 'disabled'}>
+          ${uiIcon('layers')} ${hasPublished ? 'Refresh REV proof card' : 'Publish REV proof card'}
+        </button>
+      </div>
+      ${!links.length && state.wallet ? '<p class="small muted">Connect and anchor at least one provider first.</p>' : ''}
+      <p class="small muted">Rholang index: <span class="mono-inline">byoid:rev:registry</span> · direct lookup name: <span class="mono-inline">byoid:rev:&lt;address&gt;</span>.</p>
+    </div>
+  `;
+}
+
+function renderProofLookup() {
+  const key = state.revKey;
+  return `
+    <div class="card proof-lookup">
+      <div class="card-head">
+        <div><p class="eyebrow">Proof lookup</p><h2>Proofs by REV address</h2></div>
+        <span class="badge badge-quiet">Keybase-style directory</span>
+      </div>
+      <p class="card-lede">Query a REV address to see the public proofs bound to it, or query a DID to inspect its hash-only account links. Results are verified from the selected rnode, not trusted from the lookup name.</p>
+      <div class="proof-search-row">
+        <input id="proof-query" class="node-input" value="${esc(state.proofQuery || '')}" placeholder="REV address or did:byoid:…" autocomplete="off" spellcheck="false" />
+        <button class="btn btn-primary" data-action="lookup-proofs">Look up proofs</button>
+        ${key ? '<button class="btn btn-ghost" data-action="use-my-rev-address">My address</button>' : ''}
+      </div>
+      ${renderProofLookupResult()}
+    </div>
+  `;
+}
+
 function renderChain() {
   const root = $('#chain-root');
   if (!root) return;
@@ -2406,6 +2818,9 @@ function renderChain() {
         }
       </div>
     </div>
+
+    ${renderProofLookup()}
+    ${renderProofPublisher()}
 
     <div class="card">
       <div class="card-head">
@@ -2774,15 +3189,20 @@ function renderImportModal() {
 
 function renderHelpModal(modal) {
   const providerRows = (state.config?.providers || [])
-    .map(
-      (provider) => `
+    .map((provider) => {
+      const envNames = [
+        provider.configure.clientIdEnv,
+        provider.configure.clientSecretEnv,
+        ...(provider.configure.extraEnv || []),
+      ].filter(Boolean);
+      return `
       <tr>
         <td>${esc(provider.name)}</td>
         <td><span class="badge ${provider.mode === 'live' ? 'badge-ok' : provider.mode === 'demo' ? 'badge-warn' : 'badge-quiet'}">${esc(provider.mode)}</span></td>
-        <td><code>${esc(provider.configure.clientIdEnv)}</code><br /><code>${esc(provider.configure.clientSecretEnv)}</code></td>
+        <td>${envNames.map((name) => `<code>${esc(name)}</code>`).join('<br />')}</td>
         <td><code>${esc(provider.configure.redirectUri)}</code></td>
-      </tr>`,
-    )
+      </tr>`;
+    })
     .join('');
   return `
     <div class="modal-backdrop" data-action="close-modal">
@@ -2791,11 +3211,12 @@ function renderHelpModal(modal) {
           <div><p class="eyebrow">Self-evident by construction</p><h2 id="help-modal-title">How this POC works</h2></div>
           <button class="modal-close" data-action="close-modal" aria-label="Close">×</button>
         </div>
+        <p class="help-issue-shortcut"><a href="https://github.com/rhovision-org/BYOID/issues/new" target="_blank" rel="noopener">${uiIcon('external')} Found a problem? Add an issue</a></p>
         <div class="help-section">
           <h3>The four moves</h3>
           <ol>
             <li><strong>Create.</strong> A P-256 keypair is generated in your browser. The DID is a hash of its public key, so it is self-certifying. The create event is signed by that key.</li>
-            <li><strong>Link.</strong> Google, GitHub or Facebook proves control of an account. The BYOID agent signs an attestation containing only hashes. Your wallet signs a link event that commits to the attestation hash.</li>
+            <li><strong>Link.</strong> Google, GitHub, Facebook or Apple proves control of an account. The BYOID agent signs an attestation containing only hashes. Your wallet signs a link event that commits to the attestation hash.</li>
             <li><strong>Anchor.</strong> Each signed event is written to a public name on the rholo playground: <code>byoid:did:&lt;method-specific-id&gt;</code>. The server pays phlo; it cannot sign as you.</li>
             <li><strong>Prove.</strong> A credential is signed in your browser over only the fields you include. The verifier resolves your DID from rholo, checks the hash-linked event log, each attestation and the revocation list.</li>
           </ol>
@@ -2809,8 +3230,9 @@ function renderHelpModal(modal) {
           </ul>
         </div>
         <div class="help-section" id="help-oauth">
-          <h3>Enable real Google / GitHub / Facebook OAuth</h3>
-          <p>Out of the box each provider runs in <strong>demo mode</strong>, a clearly-labelled local simulation, so the POC works with no credentials. To use the real provider, create an OAuth app and add both values to <code>.env</code>, then restart:</p>
+          <h3>Enable real Google / GitHub / Facebook / Apple OAuth</h3>
+          <p>Out of the box each provider runs in <strong>demo mode</strong>, a clearly-labelled local simulation, so the POC works with no credentials. Live OAuth requires the Node server because it must keep client secrets and sign the link attestation; the GitHub Pages build has no server and therefore stays in demo mode.</p>
+          <p>Create the provider apps, register the exact redirect URI from the table below, add the values to <code>.env</code>, and restart:</p>
           <pre class="code-block light">PUBLIC_URL=http://localhost:3000
 
 # Google (OIDC)
@@ -2823,9 +3245,17 @@ GITHUB_CLIENT_SECRET=…
 
 # Facebook (OAuth 2.0)
 FACEBOOK_CLIENT_ID=…
-FACEBOOK_CLIENT_SECRET=…</pre>
+FACEBOOK_CLIENT_SECRET=…
+
+# Apple (OIDC / Sign in with Apple)
+APPLE_CLIENT_ID=…
+APPLE_TEAM_ID=…
+APPLE_KEY_ID=…
+APPLE_PRIVATE_KEY_PATH=./AuthKey_XXXXXXXXXX.p8
+# or supply a pre-generated APPLE_CLIENT_SECRET JWT instead of the key pair</pre>
           <p style="margin-top:10px">Register these exact redirect URIs:</p>
           <div style="overflow:auto"><table class="setup-table"><thead><tr><th>Provider</th><th>Mode</th><th>Environment</th><th>Redirect URI</th></tr></thead><tbody>${providerRows}</tbody></table></div>
+          <p style="margin-top:10px">Apple uses a Services ID as the client id, a Team ID, a Key ID, and the <code>.p8</code> private key. BYOID builds the short-lived Apple client-secret JWT for you. Never put these values in the static GitHub Pages build.</p>
         </div>
         <div class="help-section">
           <h3>Run it yourself</h3>
@@ -2838,12 +3268,24 @@ RHOLO_URL=https://playground.rhobot.net npm start
 # run the UI without chain writes
 CHAIN_WRITES=false npm start</pre>
         </div>
+        <div class="help-section" id="help-rev-proofs">
+          <h3>Keybase-style proofs by REV address</h3>
+          <p>The Chain tab can publish a proof card that binds a secp256k1 REV address to your DID. The card is signed by both keys, lists the provider handles you choose to disclose, and is anchored at <code>byoid:rev:&lt;address&gt;</code>. A Rholang registry contract at <code>byoid:rev:registry</code> indexes the latest card. Lookups verify the signatures and every provider attestation before displaying a result.</p>
+          <a class="btn btn-ghost btn-sm" href="https://github.com/rhovision-org/BYOID/blob/main/docs/rev-proofs.md" target="_blank" rel="noopener">${uiIcon('external')} Proof-card specification</a>
+        </div>
+        <div class="help-section" id="help-issues">
+          <h3>Report a bug or request a feature</h3>
+          <p>Issues and design discussions live in the community repository. If something is broken, unclear, or missing, open an issue with the steps you followed and which rnode you used.</p>
+          <a class="btn btn-secondary" href="https://github.com/rhovision-org/BYOID/issues/new" target="_blank" rel="noopener">${uiIcon('external')} Add an issue</a>
+        </div>
         <div class="help-section">
           <h3>Limits worth naming</h3>
           <ul>
             <li>The rholo playground is a public dev chain and may reset. Do not use test data for anything real.</li>
             <li>A public tuple-space name is a bulletin board: anyone can write to it. Integrity comes from signatures and the hash-linked chain, and the resolver ignores invalid events, gaps and forks. A production DID method would use an unforgeable-name registry with a controller capability.</li>
-            <li>Demo providers are simulations by design, not a bypass for real OAuth. Their attestations carry <code>demo: true</code>.</li>
+            <li>Demo providers are simulations by design, not a bypass for real OAuth. Google, GitHub, Facebook and Apple demo attestations carry <code>demo: true</code>. Live OAuth requires the Node server.</li>
+            <li>REV proof cards are public by design: the handles you publish become visible. The card proves control of the REV key and the DID, and every provider attestation is checked against an anchored link event.</li>
+            <li>The Rholang registry contract at <code>byoid:rev:registry</code> indexes the latest card per address. The app also mirrors cards at <code>byoid:rev:&lt;address&gt;</code>, so a lookup is a read and does not require a deploy.</li>
             <li>This is a POC, not an audited identity system. The wallet key is extractable so you can back it up; treat the browser as sensitive.</li>
           </ul>
         </div>
@@ -3191,6 +3633,21 @@ document.addEventListener('click', async (event) => {
           }
         });
         break;
+      case 'lookup-proofs':
+        await lookupProofsFromInput();
+        break;
+      case 'use-my-rev-address':
+        await ensureRevProofKey();
+        state.proofQuery = state.revKey?.address || '';
+        if ($('#proof-query')) $('#proof-query').value = state.proofQuery;
+        await lookupProofsFromInput();
+        break;
+      case 'copy-rev-address':
+        if (state.revKey) await copyText(state.revKey.address, 'REV address copied');
+        break;
+      case 'publish-rev-proofs':
+        await publishRevProofs();
+        break;
       case 'open-node-picker':
         state.modal = {
           type: 'node',
@@ -3287,6 +3744,11 @@ document.addEventListener('change', async (event) => {
 });
 
 document.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' && event.target?.id === 'proof-query') {
+    event.preventDefault();
+    lookupProofsFromInput();
+    return;
+  }
   if (event.key === 'Escape' && state.modal) {
     state.modal = null;
     renderModal();
@@ -3336,6 +3798,7 @@ async function boot() {
     if (state.wallet) {
       await refreshResolution({ force: false, quiet: true });
       state.wallet.fingerprint ||= `sha256:${await sha256B64url(canonicalize(state.wallet.publicJwk))}`;
+      await ensureRevProofKey().catch(() => {});
       saveWallet();
     }
     renderAll();

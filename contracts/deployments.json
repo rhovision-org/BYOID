@@ -1,0 +1,34 @@
+{
+  "https://playground.rhobot.net": {
+    "url": "https://playground.rhobot.net",
+    "contract": "byoid:rev:registry",
+    "status": "existing",
+    "deployId": null,
+    "blockNumber": null,
+    "networkId": "playground",
+    "shardId": "/playground",
+    "checkedAt": "2026-11-08T17:33:50.899Z"
+  },
+  "https://testnet.rhobot.net": {
+    "url": "https://testnet.rhobot.net",
+    "contract": "byoid:rev:registry",
+    "status": "unavailable",
+    "error": "contract deploy did not succeed: deploy did not finish within 90000ms",
+    "deployId": "304402207c03393eafc284f78e1caed09c44eaf7ec293e9b920069df597c6a858d41746b022011545f04d8d21de7be11ba73f09fb879f1c4ab6c620443993973881024d02d01",
+    "blockNumber": null,
+    "networkId": "testnet-133b1d307b175012",
+    "shardId": "/testnet",
+    "checkedAt": "2026-11-08T17:46:44.062Z"
+  },
+  "https://history.rhobot.net": {
+    "url": "https://history.rhobot.net",
+    "contract": "byoid:rev:registry",
+    "status": "read-only",
+    "error": null,
+    "deployId": null,
+    "blockNumber": null,
+    "networkId": "history",
+    "shardId": "/history",
+    "checkedAt": "2026-11-08T17:52:34.148598Z"
+  }
+}

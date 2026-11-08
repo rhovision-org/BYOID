@@ -19,11 +19,14 @@ import {
   EVENT_TYPES,
   hashField,
   isDid,
+  isRevAddress,
   providerSubjectHash,
   publicJwkOf,
   reduceEvents,
+  revAnchorName,
   sha256B64url,
   signEs256,
+  unb64url,
   utf8,
   validateEventShape,
   verifyCredential,
@@ -154,6 +157,9 @@ function publicProviders() {
       configure: {
         clientIdEnv: provider.env.clientId,
         clientSecretEnv: provider.env.clientSecret,
+        extraEnv: Object.entries(provider.env)
+          .filter(([key]) => key !== 'clientId' && key !== 'clientSecret')
+          .map(([, value]) => value),
         redirectUri: `${publicUrl()}/auth/${provider.id}/callback`,
       },
       mode: 'demo',
@@ -588,6 +594,74 @@ export function createStaticBackend({
     return walletEvents(wallet()).filter((event) => event.did === did);
   }
 
+  async function readRevProofCards(address) {
+    if (!isRevAddress(address)) throw httpError(400, 'invalid-rev-address', 'invalid REV address');
+    const name = revAnchorName(address);
+    const read = await client.readName(name);
+    const cards = [];
+    const invalid = [];
+    for (const value of read.values) {
+      try {
+        cards.push(JSON.parse(new TextDecoder().decode(unb64url(value))));
+      } catch {
+        invalid.push(String(value).slice(0, 120));
+      }
+    }
+    return {
+      address,
+      name,
+      values: read.values.length,
+      cards,
+      invalid,
+      block: read.block,
+    };
+  }
+
+  async function publishRevProofCard(address, card) {
+    if (!isRevAddress(address)) throw httpError(400, 'invalid-rev-address', 'invalid REV address');
+    if (!card || typeof card !== 'object' || card.revAddress !== address) {
+      throw httpError(400, 'invalid-proof-card', 'proof card does not match the REV address');
+    }
+    const value = b64url(utf8(JSON.stringify(card)));
+    if (value.length > 19_000) throw httpError(413, 'proof-card-too-large', 'proof card is too large');
+    const name = revAnchorName(address);
+    const resultName = `byoid:rev:result:${randomB64url(8)}`;
+    const term =
+      `@"byoid:rev:registry"!("publish", "${address}", "${value}", "${resultName}") | ` +
+      `@"${name}"!("${value}")`;
+    const submittedAt = new Date().toISOString();
+    const submitted = await client.submitDeploy(term);
+    const executed = await client.waitForDeploy(submitted.deployId);
+    if (executed.state !== 'success') {
+      throw new RholoWebError(`the REV proof deploy did not execute: ${executed.error || executed.state}`, {
+        code: 'rev-proof-not-executed',
+        body: JSON.stringify(executed),
+      });
+    }
+    const block = executed.block;
+    const observed = await client.getDataAtName(name, block.blockHash);
+    if (!observed.values.includes(value)) {
+      throw new RholoWebError('the REV proof card was not observed at its public name', {
+        code: 'rev-proof-not-observed',
+      });
+    }
+    return {
+      eventId: `rev:${address}`,
+      eventType: 'byoid.rev.proofs',
+      eventSeq: null,
+      name,
+      valueHash: await sha256B64url(value),
+      deployId: submitted.deployId,
+      submittedAt,
+      confirmedAt: new Date().toISOString(),
+      blockHash: block.blockHash,
+      blockNumber: block.blockNumber,
+      preStateHash: block.preStateHash || null,
+      postStateHash: block.postStateHash || null,
+      term,
+    };
+  }
+
   function setNode(nextUrl) {
     const url = client.setUrl(nextUrl);
     chainStatusCache = { at: 0, body: null };
@@ -642,6 +716,15 @@ export function createStaticBackend({
         const job = jobs.get(id);
         if (!job) throw httpError(404, 'job-not-found', 'anchor job not found');
         return job;
+      }
+
+      if (verb === 'POST' && pathname === '/api/rev/publish') {
+        return await publishRevProofCard(body?.address, body?.card);
+      }
+
+      if (verb === 'GET' && pathname.startsWith('/api/rev/')) {
+        const address = decodeURIComponent(pathname.slice('/api/rev/'.length));
+        return await readRevProofCards(address);
       }
 
       if (verb === 'POST' && pathname === '/api/verify') {

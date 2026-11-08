@@ -109,6 +109,50 @@ export const PROVIDER_CATALOG = {
       },
     ],
   },
+  apple: {
+    id: 'apple',
+    name: 'Apple',
+    kind: 'OpenID Connect',
+    description:
+      'Sign in with Apple. BYOID verifies the Apple identity token and uses the stable Apple subject and optional email.',
+    scopes: ['name', 'email'],
+    authorizeUrl: 'https://appleid.apple.com/auth/authorize',
+    tokenUrl: 'https://appleid.apple.com/auth/token',
+    jwksUrl: 'https://appleid.apple.com/auth/keys',
+    issuer: 'https://appleid.apple.com',
+    pkce: false,
+    responseMode: 'query',
+    docsUrl: 'https://developer.apple.com/documentation/signinwithapplerestapi',
+    env: {
+      clientId: 'APPLE_CLIENT_ID',
+      clientSecret: 'APPLE_CLIENT_SECRET',
+      teamId: 'APPLE_TEAM_ID',
+      keyId: 'APPLE_KEY_ID',
+      privateKey: 'APPLE_PRIVATE_KEY',
+    },
+    demoProfiles: [
+      {
+        id: 'apple-ada',
+        label: 'Ada Demo',
+        subject: 'demo-apple-ada-4001',
+        handle: 'ada.demo',
+        name: 'Ada Demo',
+        email: 'ada.demo@example.com',
+        emailVerified: true,
+        avatarUrl: null,
+      },
+      {
+        id: 'apple-grace',
+        label: 'Grace Demo',
+        subject: 'demo-apple-grace-4002',
+        handle: 'grace.demo',
+        name: 'Grace Demo',
+        email: 'grace.demo@example.com',
+        emailVerified: true,
+        avatarUrl: null,
+      },
+    ],
+  },
 };
 
 export const PROVIDER_IDS = Object.keys(PROVIDER_CATALOG);

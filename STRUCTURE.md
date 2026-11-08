@@ -7,19 +7,23 @@ BYOID/
 ├── .github/workflows/    # GitHub Pages static demo deployment
 ├── docs/
 │   ├── architecture.md
-│   └── did-method.md
+│   ├── did-method.md
+│   ├── oauth.md          # Google/GitHub/Facebook/Apple live setup
+│   └── rev-proofs.md     # REV proof card format and lookup
 ├── public/               # browser wallet, verifier, shared DID model
 │   ├── index.html
 │   ├── app.js
 │   ├── shared.js
 │   ├── provider-catalog.js
 │   ├── nodes.js          # r-wallet-style rnode list / custom node storage
+│   ├── rev-proof.js      # REV proof-card signing and verification
 │   ├── static-mode.js    # browser backend: live rholo writes for Pages
 │   ├── rholo-web.js      # deploy signing / tuple-space client for browsers
 │   ├── vendor/           # bundled MIT crypto (noble curves/hashes, bs58)
 │   └── styles.css
 ├── src/                  # Node server, rholo client, OAuth adapters
 ├── test/                 # node:test unit tests
-├── examples/             # usage examples and demos
-└── contracts/            # rholang / rholo processes (future)
+├── scripts/              # OAuth readiness and registry deployment tools
+├── contracts/            # Rholang proof registry + deployment metadata
+└── examples/             # usage examples and demos
 ```

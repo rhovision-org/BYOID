@@ -49,12 +49,30 @@ const port = envInt('PORT', 3000);
 const publicUrl = envString('PUBLIC_URL', `http://localhost:${port}`).replace(/\/+$/, '');
 const demoMode = envString('OAUTH_DEMO', 'auto').toLowerCase();
 
+let applePrivateKey = envString('APPLE_PRIVATE_KEY');
+const applePrivateKeyPath = envString('APPLE_PRIVATE_KEY_PATH');
+if (!applePrivateKey && applePrivateKeyPath) {
+  try {
+    applePrivateKey = fs.readFileSync(path.resolve(rootDir, applePrivateKeyPath), 'utf8');
+  } catch {
+    applePrivateKey = '';
+  }
+}
+
 const providers = {};
 for (const id of PROVIDER_IDS) {
   const catalog = PROVIDER_CATALOG[id];
   const clientId = envString(catalog.env.clientId);
   const clientSecret = envString(catalog.env.clientSecret);
-  const configured = Boolean(clientId && clientSecret);
+  const appleTeamId = envString('APPLE_TEAM_ID');
+  const appleKeyId = envString('APPLE_KEY_ID');
+  const configured =
+    id === 'apple'
+      ? Boolean(
+          clientId &&
+            (clientSecret || (appleTeamId && appleKeyId && applePrivateKey)),
+        )
+      : Boolean(clientId && clientSecret);
   const mode = configured ? 'live' : demoMode === 'off' ? 'unconfigured' : 'demo';
   providers[id] = {
     id,
@@ -63,6 +81,7 @@ for (const id of PROVIDER_IDS) {
     configured,
     mode,
     redirectUri: `${publicUrl}/auth/${id}/callback`,
+    ...(id === 'apple' ? { appleTeamId, appleKeyId, applePrivateKey } : {}),
   };
 }
 

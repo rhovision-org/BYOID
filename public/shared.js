@@ -170,6 +170,18 @@ export function anchorName(did, prefix = 'byoid') {
   return `${prefix}:did:${methodSpecificId(did)}`;
 }
 
+/** REV addresses are base58check values derived from a secp256k1 key. */
+export function isRevAddress(value) {
+  return /^[1-9A-HJ-NP-Za-km-z]{45,60}$/.test(String(value || '').trim());
+}
+
+/** Public rholo name for a Keybase-style REV proof card. */
+export function revAnchorName(address) {
+  const value = String(address || '').trim();
+  if (!isRevAddress(value)) throw new Error('invalid REV address');
+  return `byoid:rev:${value}`;
+}
+
 // ── signed events ────────────────────────────────────────────────────────────
 
 export function eventBody(event) {

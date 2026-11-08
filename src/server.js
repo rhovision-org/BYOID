@@ -18,6 +18,7 @@ import {
   RateLimiter,
   Router,
   clientIp,
+  readBody,
   readJsonBody,
   redirect,
   securityHeaders,
@@ -35,10 +36,18 @@ import {
   getProvider,
   publicProviderInfo,
 } from './providers.js';
-import { pkceChallenge, randomBase64Url } from './crypto.js';
+import {
+  base64url,
+  pkceChallenge,
+  randomBase64Url,
+  sha256B64url,
+  utf8,
+} from './crypto.js';
 import {
   anchorName,
   isDid,
+  isRevAddress,
+  revAnchorName,
   shortId,
   verifyCredential,
   verifyPresentation,
@@ -120,6 +129,82 @@ function requireDid(value) {
     throw new HttpError(400, 'invalid-did', 'a valid did:byoid identifier is required');
   }
   return value;
+}
+
+function requireRevAddress(value) {
+  if (!isRevAddress(value)) {
+    throw new HttpError(400, 'invalid-rev-address', 'a valid REV address is required');
+  }
+  return String(value).trim();
+}
+
+async function readRevProofCards(address) {
+  const name = revAnchorName(address);
+  const read = await client.readName(name);
+  const cards = [];
+  const invalid = [];
+  for (const value of read.values) {
+    try {
+      cards.push(JSON.parse(Buffer.from(value, 'base64url').toString('utf8')));
+    } catch {
+      invalid.push(String(value).slice(0, 120));
+    }
+  }
+  return {
+    address,
+    name,
+    values: read.values.length,
+    cards,
+    invalid,
+    block: read.block,
+  };
+}
+
+async function publishRevProofCard(address, card) {
+  if (!config.chain.writes) {
+    throw new HttpError(409, 'chain-writes-disabled', 'chain writes are disabled');
+  }
+  if (!card || typeof card !== 'object' || card.revAddress !== address) {
+    throw new HttpError(400, 'invalid-proof-card', 'proof card does not match the REV address');
+  }
+  const value = base64url(utf8(JSON.stringify(card)));
+  if (value.length > 19_000) {
+    throw new HttpError(413, 'proof-card-too-large', 'proof card is too large');
+  }
+  const name = revAnchorName(address);
+  const resultName = `byoid:rev:result:${randomBase64Url(8)}`;
+  const term =
+    `@"byoid:rev:registry"!("publish", "${address}", "${value}", "${resultName}") | ` +
+    `@"${name}"!("${value}")`;
+  const submittedAt = new Date().toISOString();
+  const submitted = await client.submitDeploy(term);
+  const executed = await client.waitForDeploy(submitted.deployId);
+  if (executed.state !== 'success' || !executed.block) {
+    throw new HttpError(
+      502,
+      'rev-proof-not-executed',
+      `the REV proof deploy did not execute: ${executed.error || executed.state}`,
+    );
+  }
+  const observed = await client.getDataAtName(name, executed.block.blockHash);
+  if (!observed.values.includes(value)) {
+    throw new HttpError(502, 'rev-proof-not-observed', 'the proof card was not observed at its name');
+  }
+  return {
+    eventId: `rev:${address}`,
+    eventType: 'byoid.rev.proofs',
+    eventSeq: null,
+    name,
+    valueHash: sha256B64url(value),
+    deployId: submitted.deployId,
+    submittedAt,
+    confirmedAt: new Date().toISOString(),
+    blockHash: executed.block.blockHash,
+    blockNumber: executed.block.blockNumber,
+    preStateHash: executed.block.preStateHash || null,
+    postStateHash: executed.block.postStateHash || null,
+    term,
+  };
 }
 
 function rateLimit(limiter, req, label) {
@@ -249,6 +334,20 @@ router.post('/api/agent/anchor', async (req, res) => {
   } catch (error) {
     throw new HttpError(502, 'agent-anchor-failed', error.message);
   }
+});
+
+// ── REV proof cards ─────────────────────────────────────────────────────────
+
+router.get('/api/rev/:address', async (req, res, { params }) => {
+  const address = requireRevAddress(params.address);
+  sendJson(res, 200, await readRevProofCards(address));
+});
+
+router.post('/api/rev/publish', async (req, res) => {
+  rateLimit(anchorLimiter, req, 'REV proof publish');
+  const body = await readJsonBody(req, config.maxBodyBytes);
+  const address = requireRevAddress(body.address);
+  sendJson(res, 200, await publishRevProofCard(address, body.card));
 });
 
 // ── DID resolution / anchoring ──────────────────────────────────────────────
@@ -406,11 +505,13 @@ router.get('/auth/:provider/start', async (req, res, { params, url }) => {
   const { session } = ensureSession(req, res, sessions, { secure: secureCookies });
   const state = randomBase64Url(32);
   const verifier = randomBase64Url(48);
+  const nonce = randomBase64Url(32);
   session.did = did;
   session.oauth = {
     provider: provider.id,
     state,
     verifier,
+    nonce,
     did,
     createdAt: new Date().toISOString(),
   };
@@ -420,43 +521,46 @@ router.get('/auth/:provider/start', async (req, res, { params, url }) => {
     state,
     codeChallenge: pkceChallenge(verifier),
     redirectUri: cfg.redirectUri,
+    nonce,
   });
   log.info(`[oauth] ${provider.id}: redirecting to provider`);
   redirect(res, authUrl);
 });
 
-router.get('/auth/:provider/callback', async (req, res, { params, url }) => {
-  let provider;
-  let cfg;
+function oauthProvider(providerId) {
   try {
-    provider = getProvider(params.provider);
-    cfg = providerConfig(params.provider);
+    return {
+      provider: getProvider(providerId),
+      cfg: providerConfig(providerId),
+    };
   } catch {
     throw new HttpError(404, 'unknown-provider', 'unknown identity provider');
   }
+}
 
+async function completeOAuthCallback(req, res, provider, cfg, searchParams) {
   const { session } = readSession(req, sessions);
   if (!session?.oauth || session.oauth.provider !== provider.id) {
     oauthFailure(res, 'OAuth session expired or was started for a different provider.');
     return;
   }
 
-  const providerError = url.searchParams.get('error');
+  const providerError = searchParams.get('error');
   if (providerError) {
-    const description = url.searchParams.get('error_description') || providerError;
+    const description = searchParams.get('error_description') || providerError;
     delete session.oauth;
     oauthFailure(res, `${provider.name} returned: ${description}`);
     return;
   }
 
-  const state = url.searchParams.get('state') || '';
+  const state = searchParams.get('state') || '';
   if (!sameState(session.oauth.state, state)) {
     delete session.oauth;
     oauthFailure(res, 'OAuth state did not match. Start the connection again.');
     return;
   }
 
-  const code = url.searchParams.get('code') || '';
+  const code = searchParams.get('code') || '';
   if (!code) {
     delete session.oauth;
     oauthFailure(res, 'The provider did not return an authorization code.');
@@ -469,7 +573,12 @@ router.get('/auth/:provider/callback', async (req, res, { params, url }) => {
       codeVerifier: session.oauth.verifier,
       redirectUri: cfg.redirectUri,
     });
-    const profile = await fetchProfile(provider, tokens);
+    const profile = await fetchProfile(provider, {
+      ...tokens,
+      clientId: cfg.clientId,
+      nonce: session.oauth.nonce,
+      user: searchParams.get('user') || null,
+    });
     const did = session.oauth.did;
     requireDid(did);
     const attestation = await agent.signAttestation(
@@ -496,6 +605,20 @@ router.get('/auth/:provider/callback', async (req, res, { params, url }) => {
     delete session.oauth;
     oauthFailure(res, `${provider.name} sign-in failed: ${error.message}`);
   }
+}
+
+router.get('/auth/:provider/callback', async (req, res, { params, url }) => {
+  const { provider, cfg } = oauthProvider(params.provider);
+  await completeOAuthCallback(req, res, provider, cfg, url.searchParams);
+});
+
+// Apple can be configured for form_post. Keep this route so that mode works
+// even though BYOID defaults to the query response mode.
+router.post('/auth/:provider/callback', async (req, res, { params }) => {
+  const { provider, cfg } = oauthProvider(params.provider);
+  const body = await readBody(req, config.maxBodyBytes);
+  const form = new URLSearchParams(body.toString('utf8'));
+  await completeOAuthCallback(req, res, provider, cfg, form);
 });
 
 router.post('/api/demo/link', async (req, res) => {

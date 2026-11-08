@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
       name="description"
-      content="BYOID — bring your Google, GitHub and Facebook accounts together under one self-sovereign identity anchored on the rholo playground."
+      content="BYOID — bring your Google, GitHub, Facebook and Apple accounts together under one self-sovereign identity anchored on rholo."
     />
     <meta name="color-scheme" content="light" />
     <title>BYOID — one identity, many accounts, yours</title>
@@ -56,8 +56,9 @@
     <div class="static-banner" id="static-banner" hidden>
       <strong>GitHub Pages build · live rholo chain.</strong>
       DID events are anchored through the selected rholo rnode from your browser.
-      Provider sign-in is simulated in demo mode; the browser generates a local
-      devnet phlo key and requests test REV from the selected node's faucet.
+      Google, GitHub, Facebook and Apple sign-in is simulated in demo mode here;
+      live OAuth requires the Node server. The browser generates a local devnet
+      phlo key and requests test REV from the selected node's faucet.
     </div>
 
     <main class="layout">
@@ -66,8 +67,8 @@
           <p class="eyebrow"><span class="eyebrow-line"></span> A self-sovereign identity POC on rholo</p>
           <h1>One identity.<br />Many accounts. <em>Yours.</em></h1>
           <p class="hero-lede">
-            Connect Google, GitHub and Facebook. BYOID welds them into a single
-            <span class="mono-inline">did:byoid</span> anchored on the rholo playground — then lets you prove
+            Connect Google, GitHub, Facebook and Apple. BYOID welds them into a single
+            <span class="mono-inline">did:byoid</span> anchored on rholo — then lets you prove
             only what you choose, from a credential signed in your own browser.
           </p>
           <div class="hero-actions">
@@ -93,6 +94,8 @@
               <span class="provider-dot github-dot">GH</span>
               <span class="provider-connect"></span>
               <span class="provider-dot facebook-dot">f</span>
+              <span class="provider-connect"></span>
+              <span class="provider-dot apple-dot">A</span>
             </div>
             <div class="hero-card-foot">
               <span>one anchor</span>

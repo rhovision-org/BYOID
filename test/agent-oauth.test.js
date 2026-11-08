@@ -1,15 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { generateKeyPairSync } from 'node:crypto';
 
 import { Agent } from '../src/agent.js';
-import { generateAgentKey } from '../src/crypto.js';
+import { generateAgentKey, jwsSign } from '../src/crypto.js';
 import {
   PROVIDER_CATALOG,
+  appleClientSecret,
   buildAuthorizationUrl,
   demoProfile,
   exchangeCode,
   fetchProfile,
   publicProviderInfo,
+  verifyAppleIdToken,
 } from '../src/providers.js';
 import { didFromPublicJwk, publicJwkOf } from '../public/shared.js';
 
@@ -199,4 +202,98 @@ test('demo profiles are marked and public provider info has no secret', () => {
   assert.equal(info.mode, 'demo');
   assert.equal(JSON.stringify(info).includes('clientSecretValue'), false);
   assert.equal(info.configure.redirectUri, 'http://localhost:3000/auth/google/callback');
+});
+
+test('Apple authorization URL carries a nonce and query response mode', () => {
+  const url = new URL(
+    buildAuthorizationUrl(
+      PROVIDER_CATALOG.apple,
+      { clientId: 'com.example.byoid.web' },
+      {
+        state: 'state-apple',
+        redirectUri: 'https://example.com/auth/apple/callback',
+        nonce: 'nonce-apple',
+      },
+    ),
+  );
+  assert.equal(url.origin, 'https://appleid.apple.com');
+  assert.equal(url.searchParams.get('response_mode'), 'query');
+  assert.equal(url.searchParams.get('nonce'), 'nonce-apple');
+  assert.equal(url.searchParams.get('code_challenge'), null);
+});
+
+test('Apple client secret is a valid ES256 JWT for the Services ID', () => {
+  const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+  const secret = appleClientSecret(
+    PROVIDER_CATALOG.apple,
+    {
+      clientId: 'com.example.byoid.web',
+      appleTeamId: 'TEAM123456',
+      appleKeyId: 'KEY1234567',
+      applePrivateKey: privateKey.export({ format: 'pem', type: 'pkcs8' }).toString(),
+    },
+    { now: 1_700_000_000 },
+  );
+  const [headerPart, payloadPart] = secret.split('.');
+  const header = JSON.parse(Buffer.from(headerPart, 'base64url').toString());
+  const payload = JSON.parse(Buffer.from(payloadPart, 'base64url').toString());
+  assert.equal(header.alg, 'ES256');
+  assert.equal(header.kid, 'KEY1234567');
+  assert.equal(payload.iss, 'TEAM123456');
+  assert.equal(payload.sub, 'com.example.byoid.web');
+  assert.equal(payload.aud, 'https://appleid.apple.com');
+  assert.equal(payload.exp > payload.iat, true);
+});
+
+test('Apple identity tokens are verified and normalized without exposing the token', async () => {
+  const key = await generateAgentKey();
+  const now = Math.floor(Date.now() / 1000);
+  const idToken = await jwsSign(key.privateJwk, 'apple-key-1', {
+    iss: 'https://appleid.apple.com',
+    aud: 'com.example.byoid.web',
+    exp: now + 600,
+    iat: now,
+    nonce: 'nonce-123',
+    sub: 'apple-subject-1',
+    email: 'ada@example.com',
+    email_verified: 'true',
+  });
+  const fetchImpl = async () =>
+    new Response(JSON.stringify({ keys: [{ ...key.publicJwk, kid: 'apple-key-1' }] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  const claims = await verifyAppleIdToken(idToken, {
+    clientId: 'com.example.byoid.web',
+    nonce: 'nonce-123',
+    fetchImpl,
+  });
+  assert.equal(claims.sub, 'apple-subject-1');
+  const profile = await fetchProfile(
+    PROVIDER_CATALOG.apple,
+    {
+      id_token: idToken,
+      clientId: 'com.example.byoid.web',
+      nonce: 'nonce-123',
+      user: JSON.stringify({ name: { firstName: 'Ada', lastName: 'Lovelace' } }),
+    },
+    { fetchImpl },
+  );
+  assert.deepEqual(profile, {
+    provider: 'apple',
+    subject: 'apple-subject-1',
+    handle: 'ada',
+    name: 'Ada Lovelace',
+    email: 'ada@example.com',
+    emailVerified: true,
+    avatarUrl: null,
+  });
+  await assert.rejects(
+    verifyAppleIdToken(idToken, {
+      clientId: 'com.example.byoid.web',
+      nonce: 'wrong-nonce',
+      fetchImpl,
+    }),
+    /nonce/,
+  );
 });

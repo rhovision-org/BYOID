@@ -51,19 +51,22 @@ The Node app performs live anchor reads and writes against the rholo playground.
 ```bash
 npm install
 npm start          # http://127.0.0.1:3000
-npm test           # 22 unit tests
+npm test           # 31 unit tests
+npm run oauth:check
 ```
 
-No credentials are required. Google, GitHub and Facebook run in demo mode until
-you set their OAuth client id/secret pairs in `.env` (see `.env.example`).
+No credentials are required. Google, GitHub, Facebook and Apple run in demo mode
+until you configure live OAuth in `.env` (see `.env.example` and
+[docs/oauth.md](docs/oauth.md)). The Pages build remains demo-only because live
+OAuth needs a server to hold client secrets and sign attestations.
 
 ### What the POC demonstrates
 
 1. A P-256 keypair and `did:byoid` identifier generated in the browser; the
    private key never leaves IndexedDB.
 2. A signed, hash-linked DID event log anchored at a public rholo name.
-3. Demo or live OAuth linking, with the link agent signing hash-only
-   attestations.
+3. Demo or live OAuth linking for Google, GitHub, Facebook and Apple, with the
+   link agent signing hash-only attestations.
 4. Credentials signed in the browser with selective disclosure of handle,
    email, verification status and date.
 5. A verifier that resolves the issuer DID, checks the event chain, attestations,
@@ -75,9 +78,18 @@ you set their OAuth client id/secret pairs in `.env` (see `.env.example`).
    History, localhost-0 … localhost-4, and custom nodes stored in the browser.
    The GitHub Pages build talks to the selected node directly; the Node server
    uses `RHOLO_URL`.
+8. **Keybase-style proofs by REV address.** A browser-generated secp256k1 REV
+   key and the DID key co-sign a public proof card. Cards are anchored at
+   `byoid:rev:<address>` and indexed by the Rholang contract in
+   [`contracts/rev-proof-registry.rho`](contracts/rev-proof-registry.rho). The
+   Chain tab can publish a card and look up a REV address or DID.
+9. A **Report a bug / request a feature** link in the help dialog that opens the
+   community issue tracker.
 
 Design notes: [architecture](docs/architecture.md) ·
-[DID method draft](docs/did-method.md).
+[DID method draft](docs/did-method.md) ·
+[Live OAuth setup](docs/oauth.md) ·
+[REV proof cards](docs/rev-proofs.md).
 
 ## Getting Started
 
