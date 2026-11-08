@@ -71,6 +71,10 @@ you set their OAuth client id/secret pairs in `.env` (see `.env.example`).
    server.
 6. A **New identity** action that removes the current browser wallet and anchors
    a fresh DID, reusing the same local devnet phlo key.
+7. An r-wallet-style **rnode picker**: Rholang Playground, Rhobot Testnet,
+   History, localhost-0 … localhost-4, and custom nodes stored in the browser.
+   The GitHub Pages build talks to the selected node directly; the Node server
+   uses `RHOLO_URL`.
 
 Design notes: [architecture](docs/architecture.md) ·
 [DID method draft](docs/did-method.md).

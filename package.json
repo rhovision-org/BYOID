@@ -10,8 +10,7 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "test": "node --test",
-    "smoke:live": "node scripts/smoke-live.js"
+    "test": "node --test"
   },
   "dependencies": {
     "@noble/curves": "1.9.7",

@@ -34,6 +34,14 @@
             <span id="chain-pill-text">rholo playground</span>
           </a>
           <span class="pill pill-demo" id="mode-pill">demo identities</span>
+          <button class="icon-btn" data-action="open-node-picker" aria-label="Choose rnode" title="Choose rnode">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <rect x="3.5" y="4" width="17" height="6" rx="2" stroke="currentColor" stroke-width="1.7" />
+              <rect x="3.5" y="14" width="17" height="6" rx="2" stroke="currentColor" stroke-width="1.7" />
+              <circle cx="7" cy="7" r="1" fill="currentColor" />
+              <circle cx="7" cy="17" r="1" fill="currentColor" />
+            </svg>
+          </button>
           <button class="icon-btn" data-action="open-help" aria-label="How this POC works" title="How this POC works">
             <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
               <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.7" />
@@ -47,9 +55,9 @@
 
     <div class="static-banner" id="static-banner" hidden>
       <strong>GitHub Pages build · live rholo chain.</strong>
-      DID events are anchored on the public rholo playground from your browser. Provider
-      sign-in is simulated in demo mode; the browser generates a local devnet phlo key and
-      requests test REV from the playground faucet.
+      DID events are anchored through the selected rholo rnode from your browser.
+      Provider sign-in is simulated in demo mode; the browser generates a local
+      devnet phlo key and requests test REV from the selected node's faucet.
     </div>
 
     <main class="layout">

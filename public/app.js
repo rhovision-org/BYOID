@@ -24,6 +24,19 @@ import {
   verifyPresentation,
 } from './shared.js';
 import { createStaticBackend, STATIC_MODE } from './static-mode.js';
+import {
+  BUILT_IN_NODES,
+  DEFAULT_NODE,
+  allNodes,
+  findNode,
+  loadCustomNodes,
+  loadSelectedNode,
+  newCustomNode,
+  nodeUrl,
+  saveCustomNodes,
+  saveSelectedNode,
+  validateNodeDraft,
+} from './nodes.js';
 
 const WALLET_KEY = 'byoid.wallet.v1';
 const TAB_KEY = 'byoid.tab.v1';
@@ -56,6 +69,8 @@ const state = {
   didCache: new Map(),
   toastSeq: 0,
   progressSeq: 0,
+  node: loadSelectedNode(),
+  customNodes: loadCustomNodes(),
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -63,8 +78,9 @@ const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
 // GitHub Pages has no Node process. In static mode, API calls are served by a
 // browser-local backend that writes directly to the live rholo playground.
-const staticBackend = STATIC_MODE ? createStaticBackend({ getWallet: () => state.wallet }) : null;
-const CHAIN_LABEL = 'rholo playground';
+const staticBackend = STATIC_MODE
+  ? createStaticBackend({ getWallet: () => state.wallet, nodeUrl: nodeUrl(state.node) })
+  : null;
 
 // ── formatting / small helpers ──────────────────────────────────────────────
 
@@ -410,6 +426,26 @@ async function refreshResolution({ force = true, quiet = false } = {}) {
     if (!quiet) renderAll();
     return resolution;
   } catch (error) {
+    state.resolution = {
+      did: state.wallet.did,
+      status: {
+        valid: false,
+        forked: false,
+        gaps: false,
+        deactivated: false,
+        eventCount: 0,
+        latestSeq: 0,
+        latestEventId: null,
+        rejectedCount: 0,
+        errors: [error.message],
+      },
+      didDocument: null,
+      events: [],
+      links: [],
+      revocations: [],
+      publicKeyJwk: null,
+      block: null,
+    };
     if (!quiet) {
       toast({
         kind: 'bad',
@@ -446,6 +482,43 @@ function mergeResolutionIntoWallet(resolution) {
     );
     if (state.chain.latestBlock) state.chain.latestBlock.blockNumber = resolvedBlock;
   }
+}
+
+// A receipt can belong to another rnode. Trust the currently resolved chain
+// first, and fall back to the local receipt only when resolution is unavailable.
+function walletCreateAnchored() {
+  const wallet = state.wallet;
+  if (!wallet) return false;
+  if (state.resolution) {
+    return Boolean(
+      state.resolution.status?.valid &&
+        state.resolution.events?.some((event) => event.id === wallet.createEvent?.id),
+    );
+  }
+  return Boolean(wallet.createReceipt);
+}
+
+function activeNodeLabel() {
+  if (STATIC_MODE && state.node?.name) return state.node.name;
+  return state.chain?.status?.networkId || 'rholo playground';
+}
+
+function currentChainKey() {
+  return STATIC_MODE
+    ? nodeUrl(state.node)
+    : state.config?.chain?.url || state.chain?.url || '';
+}
+
+function receiptMatchesChain(receipt) {
+  return Boolean(receipt) && (!receipt.chain || receipt.chain === currentChainKey());
+}
+
+function linkIsAnchored(link) {
+  if (!link?.event) return false;
+  if (state.resolution) {
+    return Boolean(state.resolution.events?.some((event) => event.id === link.event.id));
+  }
+  return Boolean(link.receipt || link.anchored);
 }
 
 // ── anchor jobs / progress ──────────────────────────────────────────────────
@@ -499,7 +572,7 @@ function renderProgress() {
         progress.receipt
           ? `<div class="progress-foot"><span class="mono">${esc(shortId(progress.receipt.deployId || '', 12, 8))}</span><span>block ${esc(progress.receipt.blockNumber)}</span></div>`
           : progress.jobId
-            ? `<div class="progress-foot"><span class="mono">job ${esc(shortId(progress.jobId, 10, 6))}</span><span>${esc(CHAIN_LABEL)}</span></div>`
+            ? `<div class="progress-foot"><span class="mono">job ${esc(shortId(progress.jobId, 10, 6))}</span><span>${esc(activeNodeLabel())}</span></div>`
             : ''
       }
       ${progress.error ? `<div class="progress-error">${esc(progress.error)}</div>` : ''}
@@ -587,7 +660,8 @@ async function anchorWithRetry(event, title, { retries = 1 } = {}) {
             renderProgress();
           }
         }, 2600);
-        return { receipt: job.receipt, resolution: job.resolution, event: candidate };
+        const receipt = job.receipt ? { ...job.receipt, chain: currentChainKey() } : null;
+        return { receipt, resolution: job.resolution, event: candidate };
       } catch (error) {
         if (error.code === 'stale-sequence' && error.data?.resolution && attempts > 0) {
           attempts -= 1;
@@ -624,6 +698,7 @@ function recordReceipt(receipt) {
     deployId: receipt.deployId,
     submittedAt: receipt.submittedAt,
     confirmedAt: receipt.confirmedAt,
+    chain: receipt.chain || currentChainKey(),
     blockHash: receipt.blockHash,
     blockNumber: receipt.blockNumber,
     stateHash: receipt.postStateHash || receipt.preStateHash || null,
@@ -635,14 +710,25 @@ function recordReceipt(receipt) {
 
 function findReceipt(eventId) {
   if (!state.wallet || !eventId) return null;
-  if (state.wallet.createReceipt?.eventId === eventId) return state.wallet.createReceipt;
+  if (state.wallet.createReceipt?.eventId === eventId && receiptMatchesChain(state.wallet.createReceipt)) {
+    return state.wallet.createReceipt;
+  }
   for (const link of state.wallet.links || []) {
-    if (link.receipt?.eventId === eventId) return link.receipt;
+    if (link.receipt?.eventId === eventId && receiptMatchesChain(link.receipt)) return link.receipt;
   }
   for (const credential of state.wallet.credentials || []) {
-    if (credential.revokeReceipt?.eventId === eventId) return credential.revokeReceipt;
+    if (
+      credential.revokeReceipt?.eventId === eventId &&
+      receiptMatchesChain(credential.revokeReceipt)
+    ) {
+      return credential.revokeReceipt;
+    }
   }
-  return (state.wallet.receipts || []).find((receipt) => receipt.eventId === eventId) || null;
+  return (
+    (state.wallet.receipts || []).find(
+      (receipt) => receipt.eventId === eventId && receiptMatchesChain(receipt),
+    ) || null
+  );
 }
 
 // ── identity creation / import / export ─────────────────────────────────────
@@ -891,6 +977,106 @@ async function startOverWithNewIdentity() {
   await createIdentity();
 }
 
+// ── rnode choice ────────────────────────────────────────────────────────────
+
+function selectedNodeFromModal() {
+  const modal = state.modal;
+  if (!modal || modal.type !== 'node') return null;
+  return findNode(modal.nodeId, state.customNodes) || state.node || DEFAULT_NODE;
+}
+
+async function applyNode(node) {
+  if (!node) return;
+  if (!staticBackend) {
+    toast({
+      kind: 'warn',
+      title: 'The server chooses the rnode',
+      message: 'Set RHOLO_URL in .env and restart the Node server to use a different rnode.',
+    });
+    return;
+  }
+  if (state.busy) {
+    toast({
+      kind: 'warn',
+      title: 'Wait for the current chain write',
+      message: 'Switch rnodes after the current deploy finishes.',
+    });
+    return;
+  }
+  await withBusy(`Connecting to ${node.name}…`, async () => {
+    try {
+      await api('/api/chain/node', { method: 'POST', body: { url: nodeUrl(node) } });
+      state.node = node;
+      saveSelectedNode(node);
+      if (state.config?.chain) state.config.chain.url = nodeUrl(node);
+      state.didCache.clear();
+      state.resolution = null;
+      try {
+        state.chain = await api('/api/chain/status');
+      } catch {
+        state.chain = null;
+      }
+      if (state.config?.chain && state.chain?.status?.shardId) {
+        state.config.chain.shardId = state.chain.status.shardId;
+      }
+      if (state.wallet) await refreshResolution({ force: true, quiet: true });
+      state.modal = null;
+      renderAll();
+      const status = state.chain?.status;
+      toast({
+        kind: status ? 'ok' : 'warn',
+        title: `Using ${node.name}`,
+        message: status
+          ? `${status.networkId || 'network'} · shard ${status.shardId || '—'} · block ${status.latestBlockNumber ?? '—'}`
+          : `${nodeUrl(node)} is selected, but status is unavailable.`,
+      });
+    } catch (error) {
+      toast({ kind: 'bad', title: 'Could not switch rnode', message: error.message });
+    }
+  });
+}
+
+async function useSelectedNode() {
+  await applyNode(selectedNodeFromModal());
+}
+
+async function saveNodeDraft() {
+  const modal = state.modal;
+  if (!modal || modal.type !== 'node' || !modal.draft) return;
+  const result = validateNodeDraft({
+    id: modal.draft.id,
+    name: $('#rnode-name')?.value,
+    url: $('#rnode-url')?.value,
+    port: $('#rnode-port')?.value,
+  });
+  if (!result.ok) {
+    toast({ kind: 'warn', title: 'Check the node details', message: result.error });
+    return;
+  }
+  const customNodes = [...state.customNodes];
+  const index = customNodes.findIndex((node) => node.id === result.node.id);
+  if (index >= 0) customNodes.splice(index, 1, result.node);
+  else customNodes.push(result.node);
+  state.customNodes = customNodes;
+  saveCustomNodes(customNodes);
+  await applyNode(result.node);
+}
+
+async function removeSelectedCustomNode() {
+  const node = selectedNodeFromModal();
+  if (!node?.editable) return;
+  if (!window.confirm(`Remove the custom rnode "${node.name}" from this browser?`)) return;
+  const customNodes = state.customNodes.filter((candidate) => candidate.id !== node.id);
+  state.customNodes = customNodes;
+  saveCustomNodes(customNodes);
+  if (state.node?.id === node.id) {
+    await applyNode(DEFAULT_NODE);
+  } else {
+    state.modal.nodeId = state.node?.id || DEFAULT_NODE.id;
+    renderModal();
+  }
+}
+
 // ── provider linking ────────────────────────────────────────────────────────
 
 function providerById(id) {
@@ -905,7 +1091,7 @@ function connectProvider(providerId) {
     scrollToId('wallet-root');
     return;
   }
-  if (!state.wallet.createReceipt) {
+  if (!walletCreateAnchored()) {
     toast({ kind: 'warn', title: 'Anchor your DID first', message: 'The link event is appended to your on-chain DID log.' });
     retryCreateAnchor();
     return;
@@ -1177,7 +1363,7 @@ async function issueCredentialFromModal() {
     toast({ kind: 'bad', title: 'That account is not linked' });
     return;
   }
-  if (!link.receipt && !link.anchored) {
+  if (!linkIsAnchored(link)) {
     toast({ kind: 'warn', title: 'Anchor the link first', message: 'The verifier checks the link event on rholo.' });
     return;
   }
@@ -1462,7 +1648,7 @@ function renderHeader() {
     if (status) {
       chainPill.classList.remove('is-offline');
       chainText.textContent = `rholo · ${status.networkId || 'playground'} · #${status.latestBlockNumber ?? '—'}`;
-      chainPill.title = status.version?.node || state.config?.chain?.url || '';
+      chainPill.title = `${state.config?.chain?.url || ''}${status.version?.node ? ` · ${status.version.node}` : ''}`;
     } else {
       chainPill.classList.add('is-offline');
       chainText.textContent = 'rholo unreachable';
@@ -1516,8 +1702,8 @@ function renderStepper() {
   const root = $('#stepper');
   if (!root) return;
   const wallet = state.wallet;
-  const createDone = Boolean(wallet?.createReceipt);
-  const linkDone = Boolean(wallet?.links?.some((link) => link.receipt || link.anchored));
+  const createDone = walletCreateAnchored();
+  const linkDone = Boolean(wallet?.links?.some((link) => linkIsAnchored(link)));
   const chainDone = Boolean(
     createDone &&
       state.resolution?.status?.valid &&
@@ -1589,6 +1775,7 @@ function uiIcon(name) {
     trash: '<path d="M4 7h16M9 7V5h6v2M7 7l1 13h8l1-13M10 11v5m4-5v5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>',
     eye: '<path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" stroke="currentColor" stroke-width="1.7"/><circle cx="12" cy="12" r="2.5" stroke="currentColor" stroke-width="1.7"/>',
     layers: '<path d="m12 3 9 5-9 5-9-5 9-5Zm-9 9 9 5 9-5M3 16l9 5 9-5" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>',
+    server: '<rect x="3.5" y="4" width="17" height="6" rx="2" stroke="currentColor" stroke-width="1.7"/><rect x="3.5" y="14" width="17" height="6" rx="2" stroke="currentColor" stroke-width="1.7"/><circle cx="7" cy="7" r="1" fill="currentColor"/><circle cx="7" cy="17" r="1" fill="currentColor"/>',
   };
   return `<svg class="icon-svg" viewBox="0 0 24 24" fill="none" aria-hidden="true">${icons[name] || icons.link}</svg>`;
 }
@@ -1664,29 +1851,27 @@ function renderOnboarding() {
 function renderIdentityCard() {
   const wallet = state.wallet;
   const resolution = state.resolution;
-  const createAnchored = Boolean(
-    wallet.createReceipt ||
-      resolution?.events?.some((event) => event.id === wallet.createEvent?.id) ||
-      resolution?.status?.valid,
-  );
+  const createAnchored = walletCreateAnchored();
   const status = createAnchored
     ? 'anchored'
     : wallet.createError
       ? 'error'
-      : wallet.createReceipt
+      : !state.resolution && wallet.createReceipt
         ? 'anchoring'
         : 'local';
-  const block = wallet.createReceipt?.blockNumber || resolution?.block?.blockNumber;
+  const block = createAnchored
+    ? resolution?.block?.blockNumber || wallet.createReceipt?.blockNumber
+    : null;
   const steps = [
     { label: 'Key generated in this browser', status: 'done' },
     { label: 'Create event signed by your DID key', status: wallet.createEvent ? 'done' : 'pending' },
     {
       label: 'Deploy accepted by rholo',
-      status: wallet.createReceipt ? 'done' : wallet.createError ? 'failed' : 'pending',
+      status: createAnchored ? 'done' : wallet.createError ? 'failed' : 'pending',
     },
     {
       label: 'Included in a block',
-      status: wallet.createReceipt?.blockNumber ? 'done' : wallet.createError ? 'failed' : 'pending',
+      status: createAnchored ? 'done' : wallet.createError ? 'failed' : 'pending',
     },
     {
       label: 'Observed at the DID anchor name',
@@ -1716,7 +1901,7 @@ function renderIdentityCard() {
       </div>
       <div class="meta-grid">
         <div class="meta-item"><span class="label">Anchor name</span><span class="value mono">${esc(anchorNameValue)}</span></div>
-        <div class="meta-item"><span class="label">Chain</span><span class="value">rholo playground${block ? ` · block ${esc(block)}` : ''}</span></div>
+        <div class="meta-item"><span class="label">Chain</span><span class="value">${esc(activeNodeLabel())}${block ? ` · block ${esc(block)}` : ''}</span></div>
         <div class="meta-item"><span class="label">Created</span><span class="value">${esc(fmtDate(wallet.createdAt))}</span></div>
         <div class="meta-item"><span class="label">Event log</span><span class="value">${resolution?.status?.valid ? `${resolution.status.eventCount} event(s), seq ${resolution.status.latestSeq}` : 'not yet readable'}</span></div>
       </div>
@@ -1742,13 +1927,15 @@ function renderIdentityCard() {
 
 function renderProviderCard(provider) {
   const link = (state.wallet?.links || []).find((item) => item.provider === provider.id);
-  const ready = Boolean(state.wallet?.createReceipt && state.privateKey && !state.keyError);
+  const ready = Boolean(walletCreateAnchored() && state.privateKey && !state.keyError);
   const modeBadge =
     provider.mode === 'live'
       ? '<span class="badge badge-ok">live OAuth</span>'
       : provider.mode === 'demo'
         ? '<span class="badge badge-warn">demo</span>'
         : '<span class="badge badge-quiet">setup needed</span>';
+  const anchoredNow = linkIsAnchored(link);
+  const receiptHere = receiptMatchesChain(link?.receipt);
   const linkedBlock = link
     ? `<div class="linked-profile">
          ${avatarHtml(link.subjectHash, link.profile?.name || link.profile?.handle || provider.name, { small: true })}
@@ -1760,12 +1947,14 @@ function renderProviderCard(provider) {
        </div>
        <p class="provider-note">
          ${
-           link.receipt
-             ? `Link event anchored in block ${esc(link.receipt.blockNumber)}.`
-             : link.anchored
-               ? 'Link event observed on chain.'
-               : link.anchorError
-                 ? `Anchor error: ${esc(link.anchorError)}`
+           anchoredNow
+             ? receiptHere
+               ? `Link event anchored in block ${esc(link.receipt.blockNumber)}.`
+               : `Link event observed on ${esc(activeNodeLabel())}.`
+             : link.anchorError
+               ? `Anchor error: ${esc(link.anchorError)}`
+               : link.receipt
+                 ? 'Link event is not present on this rnode; anchor it again.'
                  : 'Link event is waiting for its anchor confirmation.'
          }
        </p>`
@@ -1774,9 +1963,9 @@ function renderProviderCard(provider) {
     ? `<div class="provider-actions">
          <button class="btn btn-secondary btn-sm" data-action="connect-provider" data-provider="${esc(provider.id)}" ${provider.mode === 'unconfigured' ? 'data-unconfigured="1"' : ''}>Reconnect</button>
          ${
-           link.receipt || link.anchored
+           anchoredNow
              ? `<button class="btn btn-ghost btn-sm" data-action="issue-credential-open" data-provider="${esc(provider.id)}">Issue VC</button>`
-             : `<button class="btn btn-primary btn-sm" data-action="retry-link" data-provider="${esc(provider.id)}">Anchor link</button>`
+             : `<button class="btn btn-primary btn-sm" data-action="retry-link" data-provider="${esc(provider.id)}" ${ready ? '' : 'disabled'} title="${ready ? '' : 'Anchor your DID on this rnode first'}">Anchor link</button>`
          }
        </div>`
     : `<button class="btn btn-secondary btn-sm btn-wide" data-action="connect-provider" data-provider="${esc(provider.id)}" ${ready ? '' : 'disabled'} title="${ready ? '' : 'Create and anchor your DID first'}">
@@ -1841,9 +2030,9 @@ function renderCredentialCard(record) {
 }
 
 function renderActivity() {
-  const receipts = [...(state.wallet?.receipts || [])].sort(
-    (a, b) => Date.parse(b.confirmedAt || 0) - Date.parse(a.confirmedAt || 0),
-  );
+  const receipts = (state.wallet?.receipts || [])
+    .filter((receipt) => receiptMatchesChain(receipt))
+    .sort((a, b) => Date.parse(b.confirmedAt || 0) - Date.parse(a.confirmedAt || 0));
   if (!receipts.length) {
     return `<div class="empty-card" style="padding:22px"><div class="empty-icon">◌</div><h3>No chain writes yet</h3><p>Your first deploy will appear here with its block and deploy id.</p></div>`;
   }
@@ -1895,7 +2084,7 @@ function renderWallet() {
          </div>`
       : '';
   const createWarning =
-    !wallet.createReceipt && !wallet.createError
+    !walletCreateAnchored() && !wallet.createError
       ? `<div class="demo-callout"><strong>Your DID is local.</strong> Anchor it before connecting accounts; the link event extends the on-chain log.</div>`
       : '';
   const links = wallet.links || [];
@@ -2066,7 +2255,7 @@ function renderVerificationResult() {
               .join('')}</details>`
           : ''
       }
-      <div class="section-subhead"><h4>Evidence</h4><span class="badge badge-quiet">rholo playground</span></div>
+      <div class="section-subhead"><h4>Evidence</h4><span class="badge badge-quiet">${esc(activeNodeLabel())}</span></div>
       <div class="chain-status-list">
         ${issuerDids
           .map(
@@ -2195,7 +2384,7 @@ function renderChain() {
       <div class="card">
         <div class="card-head">
           <div><p class="eyebrow">Your DID</p><h2>Anchor status</h2></div>
-          ${wallet ? statusBadge(resolution?.status?.valid ? 'anchored' : wallet.createReceipt ? 'anchoring' : wallet.createError ? 'error' : 'local') : '<span class="badge badge-quiet">no wallet</span>'}
+          ${wallet ? statusBadge(walletCreateAnchored() ? 'anchored' : wallet.createError ? 'error' : !state.resolution && wallet.createReceipt ? 'anchoring' : 'local') : '<span class="badge badge-quiet">no wallet</span>'}
         </div>
         ${
           wallet
@@ -2210,6 +2399,7 @@ function renderChain() {
                ${resolution?.status?.errors?.length ? `<div class="progress-error">${esc(resolution.status.errors.join(' · '))}</div>` : ''}
                <div class="card-actions" style="margin-top:12px">
                  <button class="btn btn-secondary btn-sm" data-action="refresh-did">${uiIcon('refresh')} Refresh DID log</button>
+                 <button class="btn btn-ghost btn-sm" data-action="open-node-picker">${uiIcon('server')} Change rnode</button>
                  <button class="btn btn-ghost btn-sm" data-action="copy-wallet-did">${uiIcon('copy')} Copy DID</button>
                </div>`
             : `<div class="empty-card"><div class="empty-icon">◌</div><h3>No identity in this browser</h3><p>Create one to see its signed event log.</p><button class="btn btn-primary btn-sm" data-action="create-identity">Create my identity</button></div>`
@@ -2258,6 +2448,154 @@ function renderChain() {
 }
 
 // ── rendering: modals ───────────────────────────────────────────────────────
+
+function nodeGroups(nodes) {
+  const groups = new Map();
+  for (const node of nodes) {
+    const group = node.group || 'Other';
+    if (!groups.has(group)) groups.set(group, []);
+    groups.get(group).push(node);
+  }
+  return groups;
+}
+
+function renderNodeForm(draft) {
+  return `
+    <div class="modal-backdrop" data-action="close-modal">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="node-form-title">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">Custom rnode</p>
+            <h2 id="node-form-title">${draft.id ? 'Edit node' : 'Add a node'}</h2>
+          </div>
+          <button class="modal-close" data-action="cancel-rnode-edit" aria-label="Back">×</button>
+        </div>
+        <p class="card-lede">Custom nodes are stored only in this browser. The URL and port must point at an rholo / rnode HTTP API.</p>
+        <div class="node-form">
+          <label>
+            <span class="field-label">Node name</span>
+            <input id="rnode-name" class="node-input" value="${esc(draft.name || '')}" placeholder="My rnode" autocomplete="off" />
+          </label>
+          <label>
+            <span class="field-label">Node URL</span>
+            <input id="rnode-url" class="node-input" value="${esc(draft.url || '')}" placeholder="https://rnode.example.net" autocomplete="off" spellcheck="false" />
+          </label>
+          <label>
+            <span class="field-label">Port (optional)</span>
+            <input id="rnode-port" class="node-input" value="${esc(draft.port ?? '')}" placeholder="40403" inputmode="numeric" autocomplete="off" />
+          </label>
+        </div>
+        <p class="modal-note">Leave the port blank when the URL already includes one. Selecting a node changes the chain BYOID reads and writes; it does not copy your DID anchors to that chain.</p>
+        <div class="modal-actions">
+          <button class="btn btn-ghost" data-action="cancel-rnode-edit">Back</button>
+          <button class="btn btn-primary" data-action="save-rnode">Save and use</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderNodeModal(modal) {
+  if (!STATIC_MODE) {
+    const status = state.chain?.status;
+    return `
+      <div class="modal-backdrop" data-action="close-modal">
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="node-modal-title">
+          <div class="modal-head">
+            <div><p class="eyebrow">rnode choice</p><h2 id="node-modal-title">Server-selected rnode</h2></div>
+            <button class="modal-close" data-action="close-modal" aria-label="Close">×</button>
+          </div>
+          <p class="card-lede">The local Node server chooses its rholo endpoint with <span class="mono-inline">RHOLO_URL</span>. Change it in <span class="mono-inline">.env</span> and restart the server to switch.</p>
+          <div class="chain-status-list">
+            <div class="chain-status-row"><span>Endpoint</span><span>${esc(state.config?.chain?.url || '—')}</span></div>
+            <div class="chain-status-row"><span>Network</span><span>${esc(status?.networkId || '—')}</span></div>
+            <div class="chain-status-row"><span>Shard</span><span>${esc(status?.shardId || '—')}</span></div>
+            <div class="chain-status-row"><span>Latest block</span><span>${esc(status?.latestBlockNumber ?? '—')}</span></div>
+          </div>
+          <div class="modal-actions"><button class="btn btn-ghost" data-action="close-modal">Close</button></div>
+        </div>
+      </div>
+    `;
+  }
+
+  if (modal.draft) return renderNodeForm(modal.draft);
+
+  const nodes = allNodes(state.customNodes);
+  const selected = findNode(modal.nodeId, state.customNodes) || state.node || DEFAULT_NODE;
+  const groups = nodeGroups(nodes);
+  const active = selected.id === state.node?.id;
+  const status = active ? state.chain?.status : null;
+  const caps = active ? state.chain?.capabilities : null;
+  const readOnly = Boolean(selected.readOnly) || (active && caps && caps.faucet === false);
+  const insecure =
+    nodeUrl(selected).startsWith('http://') && window.location.protocol === 'https:';
+  const optionHtml = [...groups.entries()]
+    .map(
+      ([group, groupNodes]) => `
+        <optgroup label="${esc(group)}">
+          ${groupNodes
+            .map(
+              (node) =>
+                `<option value="${esc(node.id)}" ${node.id === selected.id ? 'selected' : ''}>${esc(node.name)} → ${esc(nodeUrl(node))}</option>`,
+            )
+            .join('')}
+        </optgroup>`,
+    )
+    .join('');
+
+  return `
+    <div class="modal-backdrop" data-action="close-modal">
+      <div class="modal wide" role="dialog" aria-modal="true" aria-labelledby="node-modal-title">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">rnode choice</p>
+            <h2 id="node-modal-title">Choose an rnode</h2>
+          </div>
+          <button class="modal-close" data-action="close-modal" aria-label="Close">×</button>
+        </div>
+        <p class="card-lede">BYOID reads the DID log and submits anchors through this node. The built-in list mirrors r-wallet; custom nodes stay in this browser.</p>
+        <label class="field-label" for="rnode-select">rnode endpoint</label>
+        <select id="rnode-select" class="node-select" data-action="select-rnode">
+          ${optionHtml}
+        </select>
+        <div class="node-summary">
+          <div class="chain-status-row"><span>URL</span><span class="mono">${esc(nodeUrl(selected))}</span></div>
+          <div class="chain-status-row"><span>Group / network</span><span>${esc(selected.group || 'Custom')} · ${esc(status?.networkId || selected.network || 'custom')}</span></div>
+          <div class="chain-status-row"><span>Status</span><span>${active ? (status ? `current · verified · block ${esc(status.latestBlockNumber ?? '—')}` : 'current · status unavailable') : 'pending — press Use this node'}</span></div>
+          <div class="chain-status-row"><span>Writes / faucet</span><span>${readOnly ? 'read-only or no faucet' : active && caps ? (caps.faucet ? 'writes + faucet' : 'writes, no faucet') : 'checked after connecting'}</span></div>
+        </div>
+        ${
+          insecure
+            ? '<div class="node-warning">This page is served over HTTPS, so the browser will block an http:// rnode. Use an https:// URL or run BYOID locally.</div>'
+            : ''
+        }
+        ${
+          readOnly
+            ? '<div class="node-warning">This node is read-only or does not advertise a faucet. DID anchoring will fail here; verification reads still work.</div>'
+            : ''
+        }
+        ${
+          !active && state.wallet
+            ? '<div class="node-warning">Your current DID may not exist on this chain. After switching, use “Anchor now” or “New identity” if needed.</div>'
+            : ''
+        }
+        <div class="node-actions">
+          <button class="btn btn-ghost btn-sm" data-action="new-rnode">${uiIcon('layers')} Add custom node</button>
+          ${
+            selected.editable
+              ? `<button class="btn btn-ghost btn-sm" data-action="edit-rnode">Edit</button>
+                 <button class="btn btn-danger btn-sm" data-action="delete-rnode">Remove</button>`
+              : ''
+          }
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-ghost" data-action="close-modal">Cancel</button>
+          <button class="btn btn-primary" data-action="use-rnode">${active ? 'Reconnect' : 'Use this node'}</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
 
 function renderDemoModal(modal) {
   const provider = providerById(modal.providerId);
@@ -2525,6 +2863,7 @@ function renderModal() {
   }
   let html = '';
   if (modal.type === 'demo') html = renderDemoModal(modal);
+  else if (modal.type === 'node') html = renderNodeModal(modal);
   else if (modal.type === 'issue') html = renderIssueModal(modal);
   else if (modal.type === 'present') html = renderPresentModal();
   else if (modal.type === 'import') html = renderImportModal();
@@ -2852,6 +3191,45 @@ document.addEventListener('click', async (event) => {
           }
         });
         break;
+      case 'open-node-picker':
+        state.modal = {
+          type: 'node',
+          nodeId: state.node?.id || DEFAULT_NODE.id,
+          draft: null,
+        };
+        renderModal();
+        break;
+      case 'use-rnode':
+        await useSelectedNode();
+        break;
+      case 'new-rnode':
+        state.modal = {
+          type: 'node',
+          nodeId: state.node?.id || DEFAULT_NODE.id,
+          draft: newCustomNode(),
+        };
+        renderModal();
+        break;
+      case 'edit-rnode': {
+        const node = selectedNodeFromModal();
+        if (node?.editable) {
+          state.modal.draft = { ...node };
+          renderModal();
+        }
+        break;
+      }
+      case 'delete-rnode':
+        await removeSelectedCustomNode();
+        break;
+      case 'save-rnode':
+        await saveNodeDraft();
+        break;
+      case 'cancel-rnode-edit':
+        if (state.modal?.type === 'node') {
+          state.modal.draft = null;
+          renderModal();
+        }
+        break;
       case 'open-help':
         state.modal = { type: 'help', section: target.dataset.section || null };
         renderModal();
@@ -2899,6 +3277,11 @@ document.addEventListener('change', async (event) => {
   if (target.dataset.action === 'toggle-present-credential') {
     if (target.checked) state.selectedCredentials.add(target.dataset.credentialId);
     else state.selectedCredentials.delete(target.dataset.credentialId);
+    renderModal();
+  }
+  if (target.dataset.action === 'select-rnode' && state.modal?.type === 'node') {
+    state.modal.nodeId = target.value;
+    state.modal.draft = null;
     renderModal();
   }
 });

@@ -13,6 +13,7 @@ BYOID/
 │   ├── app.js
 │   ├── shared.js
 │   ├── provider-catalog.js
+│   ├── nodes.js          # r-wallet-style rnode list / custom node storage
 │   ├── static-mode.js    # browser backend: live rholo writes for Pages
 │   ├── rholo-web.js      # deploy signing / tuple-space client for browsers
 │   ├── vendor/           # bundled MIT crypto (noble curves/hashes, bs58)

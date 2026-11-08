@@ -173,10 +173,10 @@ function storeDeployer(deployer) {
   return value;
 }
 
-function loadFunded(address) {
+function loadFunded(address, node) {
   try {
     const record = JSON.parse(localStorage.getItem(FUNDED_KEY) || 'null');
-    if (!record || record.address !== address) return false;
+    if (!record || record.address !== address || record.node !== node) return false;
     const age = Date.now() - Date.parse(record.at || 0);
     return Number.isFinite(age) && age >= 0 && age < FUNDED_TTL_MS;
   } catch {
@@ -184,9 +184,12 @@ function loadFunded(address) {
   }
 }
 
-function storeFunded(address) {
+function storeFunded(address, node) {
   try {
-    localStorage.setItem(FUNDED_KEY, JSON.stringify({ address, at: new Date().toISOString() }));
+    localStorage.setItem(
+      FUNDED_KEY,
+      JSON.stringify({ address, node, at: new Date().toISOString() }),
+    );
   } catch {
     // Best effort only.
   }
@@ -280,10 +283,18 @@ export class RholoWebClient {
     this.fetchImpl = fetchImpl;
     this.logger = logger;
     this.deployer = loadOrCreateDeployer();
-    this._funded = loadFunded(this.deployer.address) ? Promise.resolve() : null;
+    this._funded = loadFunded(this.deployer.address, this.url) ? Promise.resolve() : null;
     this._queue = Promise.resolve();
     this._network = null;
     this._networkAt = 0;
+  }
+
+  setUrl(url) {
+    this.url = String(url || '').trim().replace(/\/+$/, '');
+    this._network = null;
+    this._networkAt = 0;
+    this._funded = loadFunded(this.deployer.address, this.url) ? Promise.resolve() : null;
+    return this.url;
   }
 
   async _request(path, { method = 'GET', body, timeoutMs = this.timeoutMs } = {}) {
@@ -423,7 +434,7 @@ export class RholoWebClient {
           response = await this.faucet(this.deployer.address);
         } catch (error) {
           if (/previous drip|finality|already/i.test(`${error.message} ${error.body || ''}`)) {
-            storeFunded(this.deployer.address);
+            storeFunded(this.deployer.address, this.url);
             this.logger.warn?.('[rholo] faucet already has a drip in flight; assuming funded');
             return;
           }
@@ -450,7 +461,7 @@ export class RholoWebClient {
             { code: 'faucet-failed' },
           );
         }
-        storeFunded(this.deployer.address);
+        storeFunded(this.deployer.address, this.url);
         this.logger.info?.(
           `[rholo] faucet funded ${this.deployer.address} (deploy ${response.deployId.slice(0, 16)}…)`,
         );

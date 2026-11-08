@@ -31,9 +31,9 @@ import {
   verifyPresentation,
 } from './shared.js';
 import { PROVIDER_CATALOG, PROVIDER_IDS } from './provider-catalog.js';
+import { DEFAULT_NODE, nodeUrl } from './nodes.js';
 import { RholoWebClient, RholoWebError } from './rholo-web.js';
 
-const LIVE_URL = 'https://playground.rhobot.net';
 const WALLET_KEY = 'byoid.wallet.v1';
 const AGENT_ISSUER = 'byoid:agent';
 const AGENT_KID = 'byoid-agent-1';
@@ -168,17 +168,17 @@ function publicProviders() {
   });
 }
 
-async function config() {
+async function config(activeNodeUrl = nodeUrl(DEFAULT_NODE)) {
   return {
     app: {
       name: 'BYOID',
       version: '0.2.0-static',
-      description: 'Bring Your Own Identity — browser wallet anchored live on the rholo playground.',
+      description: 'Bring Your Own Identity — browser wallet anchored live on the selected rholo rnode.',
     },
     static: true,
     publicUrl: publicUrl(),
     chain: {
-      url: LIVE_URL,
+      url: activeNodeUrl,
       shardId: null,
       writes: true,
       live: true,
@@ -331,9 +331,12 @@ function demoProfile(providerId, profileId) {
   };
 }
 
-export function createStaticBackend({ getWallet = readWalletSnapshot } = {}) {
+export function createStaticBackend({
+  getWallet = readWalletSnapshot,
+  nodeUrl: initialNodeUrl = nodeUrl(DEFAULT_NODE),
+} = {}) {
   const client = new RholoWebClient({
-    url: LIVE_URL,
+    url: initialNodeUrl,
     faucet: true,
     logger: console,
   });
@@ -355,7 +358,7 @@ export function createStaticBackend({ getWallet = readWalletSnapshot } = {}) {
       ...resolution,
       anchorName: name,
       source: {
-        node: LIVE_URL,
+        node: client.url,
         name,
         block: resolution.block || null,
         live: sourceKind === 'rholo',
@@ -551,7 +554,7 @@ export function createStaticBackend({ getWallet = readWalletSnapshot } = {}) {
       ok: status.status === 'fulfilled',
       static: true,
       live: true,
-      url: LIVE_URL,
+      url: client.url,
       fetchedAt: new Date().toISOString(),
       status: status.status === 'fulfilled' ? status.value : null,
       capabilities: capabilities.status === 'fulfilled' ? capabilities.value : null,
@@ -585,13 +588,27 @@ export function createStaticBackend({ getWallet = readWalletSnapshot } = {}) {
     return walletEvents(wallet()).filter((event) => event.did === did);
   }
 
+  function setNode(nextUrl) {
+    const url = client.setUrl(nextUrl);
+    chainStatusCache = { at: 0, body: null };
+    evidence.clear();
+    return { url };
+  }
+
   async function request(path, { method = 'GET', body } = {}) {
     const url = new URL(path, window.location.origin);
     const pathname = url.pathname;
     const verb = String(method || 'GET').toUpperCase();
     try {
-      if (verb === 'GET' && pathname === '/api/config') return await config();
+      if (verb === 'GET' && pathname === '/api/config') return await config(client.url);
       if (verb === 'GET' && pathname === '/api/chain/status') return await chainStatus();
+      if (verb === 'POST' && pathname === '/api/chain/node') {
+        const next = String(body?.url || '').trim();
+        if (!/^https?:\/\//i.test(next)) {
+          throw httpError(400, 'invalid-node', 'an http:// or https:// node URL is required');
+        }
+        return setNode(next);
+      }
       if (verb === 'GET' && pathname === '/api/agent') {
         return { ...(await agentInfo()), chainWrites: true, agentName: AGENT_NAME };
       }
