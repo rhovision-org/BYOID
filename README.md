@@ -32,17 +32,21 @@ Historical related work includes the earlier [DigitalLifeCollective/byoid](https
 3. Provide reference integrations (OpenID Connect provider/relying party, OAuth2, etc.) that respect user control.
 4. Document the architecture and make the system easy for ordinary users and communities to adopt.
 
-## Live demo
+## Live demos
 
-**[rhovision-org.github.io/BYOID](https://rhovision-org.github.io/BYOID/)**  
-(Community GitHub Pages project site under `rhovision-org`.)
+**[byoid.rhobot.net](https://byoid.rhobot.net/)** — full live-OAuth app on
+`rhobot-2`. Provider client secrets remain server-side in
+`/etc/byoid/byoid.env`; they are never sent to the browser or committed to Git.
+Deployment and secret-handling details are in
+[docs/deploy-rhobot.md](docs/deploy-rhobot.md).
 
-The GitHub Pages build runs without a Node server but uses the real rholo
-playground. The browser generates a local devnet phlo key, requests test REV
-from the playground faucet, signs and submits its own deploys, and reads the
-DID event log back from the public tuple-space name. DID keys, credentials and
-selective disclosure remain browser-local. OAuth provider sign-in is simulated
-in demo mode because client secrets cannot live in a static site.
+**[rhovision-org.github.io/BYOID](https://rhovision-org.github.io/BYOID/)** —
+zero-install GitHub Pages demo. The browser generates a local devnet phlo key,
+requests test REV from the playground faucet, signs and submits its own deploys,
+and reads the DID event log back from the public tuple-space name. DID keys,
+credentials and selective disclosure remain browser-local. OAuth provider
+sign-in is simulated in demo mode because client secrets cannot live in a
+static site.
 
 ## Run the full POC locally
 
@@ -89,7 +93,8 @@ OAuth needs a server to hold client secrets and sign attestations.
 Design notes: [architecture](docs/architecture.md) ·
 [DID method draft](docs/did-method.md) ·
 [Live OAuth setup](docs/oauth.md) ·
-[REV proof cards](docs/rev-proofs.md).
+[REV proof cards](docs/rev-proofs.md) ·
+[Deploy on rhobot-2](docs/deploy-rhobot.md).
 
 ## Getting Started
 

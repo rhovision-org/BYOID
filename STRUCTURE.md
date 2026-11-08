@@ -9,7 +9,8 @@ BYOID/
 │   ├── architecture.md
 │   ├── did-method.md
 │   ├── oauth.md          # Google/GitHub/Facebook/Apple live setup
-│   └── rev-proofs.md     # REV proof card format and lookup
+│   ├── rev-proofs.md     # REV proof card format and lookup
+│   └── deploy-rhobot.md  # production server, TLS, secret handling
 ├── public/               # browser wallet, verifier, shared DID model
 │   ├── index.html
 │   ├── app.js
@@ -23,7 +24,8 @@ BYOID/
 │   └── styles.css
 ├── src/                  # Node server, rholo client, OAuth adapters
 ├── test/                 # node:test unit tests
-├── scripts/              # OAuth readiness and registry deployment tools
+├── scripts/              # OAuth readiness, deploy, and registry tools
+├── deploy/               # systemd / nginx / production env assets
 ├── contracts/            # Rholang proof registry + deployment metadata
 └── examples/             # usage examples and demos
 ```

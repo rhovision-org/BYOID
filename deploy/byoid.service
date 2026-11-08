@@ -1,0 +1,41 @@
+[Unit]
+Description=BYOID — self-sovereign identity and OAuth callback server
+Documentation=https://github.com/rhovision-org/BYOID/blob/main/docs/deploy-rhobot.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=byoid
+Group=byoid
+WorkingDirectory=/opt/byoid/current
+EnvironmentFile=/etc/byoid/byoid.env
+Environment=NODE_ENV=production
+ExecStart=/usr/local/lib/node22/bin/node src/server.js
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=15
+UMask=0077
+
+# Persistent state: OAuth agent key, deploy key, future session stores.
+StateDirectory=byoid
+StateDirectoryMode=0700
+ReadWritePaths=/var/lib/byoid
+
+# Keep the service unprivileged and unable to modify the host.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

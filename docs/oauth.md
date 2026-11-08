@@ -7,25 +7,35 @@ in demo mode by design.
 
 The provider credentials are tied to your Google Cloud, GitHub, Meta, and Apple
 Developer accounts. BYOID cannot register or obtain them automatically. Create
-the provider apps below, then give the resulting values to the server through
-`.env`; `npm run oauth:check` reports what is still missing without printing any
+the provider apps below, then install the resulting values on rhobot-2 in
+`/etc/byoid/byoid.env` (or in a local `.env` for development); `npm run oauth:check` reports what is still missing without printing any
 secret.
+
+## Hosted production origin
+
+Live OAuth is served from **rhobot-2** at `https://byoid.rhobot.net`. The
+provider secrets live only in `/etc/byoid/byoid.env` on that host. They are not
+in this repository, the GitHub Pages artifact, or the browser. See
+[deploy-rhobot.md](deploy-rhobot.md) for the host setup and the exact callback
+URLs.
 
 ## Common settings
 
 ```bash
-PUBLIC_URL=https://your-byoid-host.example
+PUBLIC_URL=https://byoid.rhobot.net
 ```
 
 `PUBLIC_URL` determines every callback URL below. The provider console must
 contain the exact callback string; changing `PUBLIC_URL` requires updating all
-four provider apps.
+four provider apps. The production origin on rhobot-2 is
+`https://byoid.rhobot.net`; local development normally uses
+`http://localhost:3000`.
 
 ## Google
 
 1. Create an OAuth 2.0 Client ID of type **Web application** in Google Cloud.
 2. Add the authorized redirect URI:
-   `https://your-byoid-host.example/auth/google/callback`
+   `https://byoid.rhobot.net/auth/google/callback`
 3. Set:
    ```
    GOOGLE_CLIENT_ID=...
@@ -38,7 +48,7 @@ Scopes: `openid email profile`.
 
 1. Create an OAuth App under the account or organization that will own it.
 2. Set the authorization callback URL:
-   `https://your-byoid-host.example/auth/github/callback`
+   `https://byoid.rhobot.net/auth/github/callback`
 3. Set:
    ```
    GITHUB_CLIENT_ID=...
@@ -52,7 +62,7 @@ account grants it.
 
 1. Create a Meta app with the **Facebook Login** product.
 2. Add the valid OAuth redirect URI:
-   `https://your-byoid-host.example/auth/facebook/callback`
+   `https://byoid.rhobot.net/auth/facebook/callback`
 3. Set:
    ```
    FACEBOOK_CLIENT_ID=...
@@ -70,7 +80,7 @@ also supply a pre-generated `APPLE_CLIENT_SECRET` JWT instead.
 
 1. In Apple Developer, create a Services ID and enable **Sign in with Apple**.
 2. Configure the domain and return URL:
-   `https://your-byoid-host.example/auth/apple/callback`
+   `https://byoid.rhobot.net/auth/apple/callback`
 3. Create a Sign in with Apple key and download the `.p8` file.
 4. Set:
    ```

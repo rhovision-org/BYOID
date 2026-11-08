@@ -6,3 +6,6 @@ data/*
 .env.local
 .DS_Store
 coverage/
+
+# Apple OAuth private keys are server-side secrets only
+*.p8

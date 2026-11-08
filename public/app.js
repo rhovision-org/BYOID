@@ -3232,8 +3232,10 @@ function renderHelpModal(modal) {
         <div class="help-section" id="help-oauth">
           <h3>Enable real Google / GitHub / Facebook / Apple OAuth</h3>
           <p>Out of the box each provider runs in <strong>demo mode</strong>, a clearly-labelled local simulation, so the POC works with no credentials. Live OAuth requires the Node server because it must keep client secrets and sign the link attestation; the GitHub Pages build has no server and therefore stays in demo mode.</p>
-          <p>Create the provider apps, register the exact redirect URI from the table below, add the values to <code>.env</code>, and restart:</p>
-          <pre class="code-block light">PUBLIC_URL=http://localhost:3000
+          <p>The public live-OAuth app is <a href="https://byoid.rhobot.net/" target="_blank" rel="noopener">byoid.rhobot.net</a> on rhobot-2. Secrets are stored only in <code>/etc/byoid/byoid.env</code> on that host, never in this repository or the Pages build.</p>
+          <p>Create the provider apps, register the exact redirect URI from the table below, add the values to the server environment, and restart:</p>
+          <pre class="code-block light"># production: /etc/byoid/byoid.env on rhobot-2
+PUBLIC_URL=https://byoid.rhobot.net
 
 # Google (OIDC)
 GOOGLE_CLIENT_ID=…
