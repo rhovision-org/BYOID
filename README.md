@@ -34,7 +34,8 @@ Historical related work includes the earlier [DigitalLifeCollective/byoid](https
 
 ## Live demo
 
-**[jimscarver.github.io/BYOID](https://jimscarver.github.io/BYOID/)**
+**[jimscarver.com/BYOID](https://jimscarver.com/BYOID/)**  
+(GitHub Pages project site; `jimscarver.github.io/BYOID` redirects here.)
 
 The GitHub Pages build is a browser-only demo. DID keys, credentials, selective
 disclosure and verification are real and run locally in your browser; the
