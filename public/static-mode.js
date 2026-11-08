@@ -1,21 +1,20 @@
-// Browser-only BYOID backend for static hosting (GitHub Pages).
+// Browser backend for the GitHub Pages build.
 //
-// The GitHub Pages build has no Node process, so this module implements the
-// small `/api/*` surface the UI needs. Everything is local to the browser:
+// Unlike the first static iteration, this one uses the real rholo playground:
+// deploys are signed in the browser, submitted to https://playground.rhobot.net,
+// and DID events are read back from the tuple-space name. The playground's CORS
+// policy allows direct browser calls.
 //
-//   * the demo link agent signs real ES256 attestations with a demo key that
-//     is intentionally public in this repository;
-//   * events are validated and hash-linked with the same code as the server;
-//   * the "public name" is a localStorage bulletin board and anchoring is
-//     simulated. The UI labels this mode clearly.
-//
-// It is deliberately not a substitute for the Node app: no OAuth secrets, no
-// server-side wallet key custody, and no live rholo writes.
+// What is still local/simulated:
+//   * the OAuth provider profiles (demo mode);
+//   * the demo link-agent key, which is intentionally embedded in this build;
+//   * the phlo-payer key, generated per browser and funded by the dev faucet.
 
 import {
   anchorName,
   b64url,
   canonicalize,
+  didFromPublicJwk,
   eventId,
   EVENT_TYPES,
   hashField,
@@ -32,17 +31,26 @@ import {
   verifyPresentation,
 } from './shared.js';
 import { PROVIDER_CATALOG, PROVIDER_IDS } from './provider-catalog.js';
+import { RholoWebClient, RholoWebError } from './rholo-web.js';
 
-const CHAIN_KEY = 'byoid.static.chain.v1';
+const LIVE_URL = 'https://playground.rhobot.net';
 const WALLET_KEY = 'byoid.wallet.v1';
 const AGENT_ISSUER = 'byoid:agent';
 const AGENT_KID = 'byoid-agent-1';
 const AGENT_NAME = 'byoid:agent:key';
-const MAX_EVENTS_PER_DID = 200;
+const MAX_EVIDENCE_EVENTS = 200;
+
+const ANCHOR_STEPS = [
+  { key: 'validated', label: 'Signature and sequence checked' },
+  { key: 'submitted', label: 'Deploy accepted by rholo' },
+  { key: 'executed', label: 'Executed without error' },
+  { key: 'included', label: 'Included in a block' },
+  { key: 'observed', label: 'Observed at the DID anchor name' },
+];
 
 // Demo-only ES256 key for the identity-link agent. This key is public on
-// purpose: anybody using the static demo can mint demo attestations. Never
-// reuse it where an attestation is meant to prove a provider sign-in.
+// purpose: the static build cannot keep an agent secret. It only signs demo
+// OAuth attestations; the DID event chain is anchored with the wallet key.
 const DEMO_AGENT_PRIVATE_JWK = {
   kty: 'EC',
   crv: 'P-256',
@@ -51,14 +59,6 @@ const DEMO_AGENT_PRIVATE_JWK = {
   d: 'n81e-k_XgoB6AJtJqmV4c6gvWkFEAVq9L3L5E2hSIyw',
 };
 const DEMO_AGENT_PUBLIC_JWK = publicJwkOf(DEMO_AGENT_PRIVATE_JWK);
-
-const PROGRESS_STEPS = [
-  { key: 'validated', label: 'Signature and sequence checked' },
-  { key: 'submitted', label: 'Event accepted by the static demo' },
-  { key: 'executed', label: 'Event applied to the demo log' },
-  { key: 'included', label: 'Added to the demo block height' },
-  { key: 'observed', label: 'Readable at the demo anchor name' },
-];
 
 const isStaticHost =
   typeof window !== 'undefined' &&
@@ -82,7 +82,7 @@ function publicUrl() {
   return `${window.location.origin}${basePath()}`.replace(/\/$/, '');
 }
 
-function randomB64url(length = 32) {
+function randomB64url(length = 16) {
   const bytes = new Uint8Array(length);
   crypto.getRandomValues(bytes);
   return b64url(bytes);
@@ -107,27 +107,6 @@ function readWalletSnapshot() {
   }
 }
 
-function readStore() {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(CHAIN_KEY) || '{}');
-    return {
-      blockHeight: Number.isInteger(parsed.blockHeight) ? parsed.blockHeight : 0,
-      dids: parsed.dids && typeof parsed.dids === 'object' ? parsed.dids : {},
-    };
-  } catch {
-    return { blockHeight: 0, dids: {} };
-  }
-}
-
-function writeStore(store) {
-  try {
-    localStorage.setItem(CHAIN_KEY, JSON.stringify(store));
-  } catch {
-    // Storage can be disabled (private mode / quota). The demo still works
-    // for the current page life; evidence is carried in presentations.
-  }
-}
-
 function walletEvents(wallet) {
   if (!wallet) return [];
   const events = [];
@@ -145,62 +124,19 @@ function walletEvents(wallet) {
   return events;
 }
 
-function collectEvents(did, wallet) {
-  const store = readStore();
-  const events = [...(store.dids[did] || [])];
-  if (wallet?.did === did) {
-    for (const event of walletEvents(wallet)) {
-      if (!events.some((candidate) => candidate.id === event.id)) events.push(event);
-    }
-  }
-  return { store, events };
-}
-
-function demoBlockHash(blockNumber) {
-  return b64url(utf8(`byoid-static-block:${blockNumber}`)).slice(0, 43);
-}
-
-async function withResolutionMetadata(did, resolution, store) {
-  const name = anchorName(did, 'byoid');
-  const block = store.blockHeight
-    ? { blockNumber: store.blockHeight, blockHash: demoBlockHash(store.blockHeight) }
-    : null;
-  resolution.anchorName = name;
-  resolution.block = block;
-  resolution.source = {
-    node: 'GitHub Pages demo',
-    name,
-    block,
-    static: true,
-  };
-  return resolution;
-}
-
-async function resolveDid(did, wallet) {
-  const { store, events } = collectEvents(did, wallet);
-  const resolution = await reduceEvents(did, events);
-  return withResolutionMetadata(did, resolution, store);
-}
-
-async function agentFingerprint() {
-  return `sha256:${await sha256B64url(canonicalize(DEMO_AGENT_PUBLIC_JWK))}`;
-}
-
 async function agentInfo() {
+  const fingerprint = `sha256:${await sha256B64url(canonicalize(DEMO_AGENT_PUBLIC_JWK))}`;
   return {
     issuer: AGENT_ISSUER,
     kid: AGENT_KID,
     publicJwk: DEMO_AGENT_PUBLIC_JWK,
-    fingerprint: await agentFingerprint(),
+    fingerprint,
     createdAt: '2026-11-08T00:00:00.000Z',
-    role: 'static demo identity-link agent',
+    role: 'demo identity-link agent (static build)',
     chainAnchor: {
       status: 'demo',
       name: AGENT_NAME,
-      blockNumber: 1,
-      deployId: 'static-demo',
-      confirmedAt: '2026-11-08T00:00:00.000Z',
-      publicJwk: DEMO_AGENT_PUBLIC_JWK,
+      note: 'Demo link-agent key is embedded in the static build; DID events are anchored live on rholo.',
     },
   };
 }
@@ -236,20 +172,21 @@ async function config() {
   return {
     app: {
       name: 'BYOID',
-      version: '0.1.0-static',
-      description: 'Bring Your Own Identity — a browser-only POC hosted on GitHub Pages.',
+      version: '0.2.0-static',
+      description: 'Bring Your Own Identity — browser wallet anchored live on the rholo playground.',
     },
     static: true,
     publicUrl: publicUrl(),
     chain: {
-      url: 'GitHub Pages demo (browser-local)',
-      shardId: '/demo',
+      url: LIVE_URL,
+      shardId: null,
       writes: true,
-      simulated: true,
+      live: true,
+      simulated: false,
       anchorPrefix: 'byoid',
       agentName: AGENT_NAME,
-      faucet: false,
-      phloLimit: 0,
+      faucet: true,
+      phloLimit: 1_000_000,
     },
     providers: publicProviders(),
     agent: await agentInfo(),
@@ -258,33 +195,78 @@ async function config() {
   };
 }
 
-function chainStatus() {
-  const store = readStore();
-  const height = store.blockHeight;
+function createJobs() {
+  const jobs = new Map();
+  let sequence = 0;
   return {
-    ok: true,
-    static: true,
-    url: 'GitHub Pages demo (browser-local)',
-    fetchedAt: new Date().toISOString(),
-    status: {
-      networkId: 'github-pages',
-      shardId: '/demo',
-      latestBlockNumber: height,
-      proposeOnDeploy: false,
-      version: { node: 'BYOID static demo' },
+    create({ did, event, steps = ANCHOR_STEPS }) {
+      const now = new Date().toISOString();
+      const job = {
+        id: `web-${++sequence}-${randomB64url(8)}`,
+        kind: 'anchor',
+        did,
+        eventId: event?.id || null,
+        eventSeq: event?.seq || null,
+        eventType: event?.type || null,
+        status: 'queued',
+        steps: steps.map((step) => ({ ...step, status: 'pending', detail: '' })),
+        createdAt: now,
+        updatedAt: now,
+        error: null,
+        receipt: null,
+        resolution: null,
+      };
+      jobs.set(job.id, job);
+      return job;
     },
-    capabilities: {
-      autopropose: false,
-      proposeOnDeploy: false,
-      manualPropose: true,
-      adminHttp: false,
-      devMode: true,
-      faucet: false,
+    get(id) {
+      return jobs.get(id) || null;
     },
-    latestBlock: height
-      ? { blockNumber: height, blockHash: demoBlockHash(height) }
-      : null,
-    errors: [],
+    setStep(id, key, status, detail = '') {
+      const job = jobs.get(id);
+      if (!job) return null;
+      const step = job.steps.find((candidate) => candidate.key === key);
+      if (step) {
+        step.status = status;
+        if (detail) step.detail = detail;
+      }
+      job.updatedAt = new Date().toISOString();
+      return job;
+    },
+    fail(id, error) {
+      const job = jobs.get(id);
+      if (!job) return null;
+      const active = job.steps.find((step) => step.status === 'active');
+      if (active) active.status = 'failed';
+      job.status = 'error';
+      job.error = {
+        code: error.code || 'anchor-failed',
+        message: error.message || String(error),
+        ...(error.data?.resolution || error.resolution
+          ? { resolution: error.data?.resolution || error.resolution }
+          : {}),
+      };
+      job.updatedAt = new Date().toISOString();
+      return job;
+    },
+    run(id, fn) {
+      const job = jobs.get(id);
+      if (!job) return null;
+      job.status = 'running';
+      Promise.resolve()
+        .then(fn)
+        .then((result) => {
+          const current = jobs.get(id);
+          if (!current) return;
+          current.status = 'done';
+          current.receipt = result?.receipt || null;
+          current.resolution = result?.resolution || null;
+          current.updatedAt = new Date().toISOString();
+          for (const step of current.steps) step.status = 'done';
+        })
+        .catch((error) => this.fail(id, error));
+      return job;
+    },
   };
 }
 
@@ -349,24 +331,16 @@ function demoProfile(providerId, profileId) {
   };
 }
 
-function createJobs() {
-  const jobs = new Map();
-  let sequence = 0;
-  return {
-    create(payload) {
-      const id = `static-job-${++sequence}-${randomB64url(6)}`;
-      const job = { id, status: 'running', steps: [], ...payload };
-      jobs.set(id, job);
-      return job;
-    },
-    get(id) {
-      return jobs.get(id) || null;
-    },
-  };
-}
-
 export function createStaticBackend({ getWallet = readWalletSnapshot } = {}) {
+  const client = new RholoWebClient({
+    url: LIVE_URL,
+    faucet: true,
+    logger: console,
+  });
   const jobs = createJobs();
+  const evidence = new Map();
+  let chainStatusCache = { at: 0, body: null };
+
   const wallet = () => {
     try {
       return getWallet() || readWalletSnapshot();
@@ -375,244 +349,357 @@ export function createStaticBackend({ getWallet = readWalletSnapshot } = {}) {
     }
   };
 
-  async function anchorEvent(did, event) {
-    if (!isDid(did)) throw httpError(400, 'invalid-did', 'a valid did:byoid identifier is required');
-    if (!event || typeof event !== 'object') {
-      throw httpError(400, 'missing-event', 'an event object is required');
-    }
-    validateEventShape(event);
-    if (event.did !== did) throw httpError(400, 'invalid-event', 'event belongs to a different DID');
-
-    const currentWallet = wallet();
-    const { store, events } = collectEvents(did, currentWallet);
-    const resolution = await reduceEvents(did, events);
-
-    if (events.some((candidate) => candidate.id === event.id)) {
-      return { alreadyAnchored: true, resolution: await withResolutionMetadata(did, resolution, store) };
-    }
-
-    const isCreate = event.type === EVENT_TYPES.CREATE;
-    if (isCreate) {
-      if (resolution.status.valid) {
-        throw httpError(409, 'create-exists', 'this DID already has a create event in the demo log');
-      }
-      if (!(await verifyEventSignature(event.payload.publicKeyJwk, event))) {
-        throw httpError(400, 'invalid-event', 'create event signature does not verify');
-      }
-    } else {
-      if (!resolution.status.valid) {
-        throw httpError(
-          409,
-          'stale-sequence',
-          'the DID has no valid create event in the demo log',
-          { resolution: await withResolutionMetadata(did, resolution, store) },
-        );
-      }
-      if (
-        event.seq !== resolution.status.latestSeq + 1 ||
-        event.prev !== resolution.status.latestEventId
-      ) {
-        throw httpError(
-          409,
-          'stale-sequence',
-          'the event does not extend the current demo log tip',
-          { resolution: await withResolutionMetadata(did, resolution, store) },
-        );
-      }
-      if (!(await verifyEventSignature(resolution.publicKeyJwk, event))) {
-        throw httpError(400, 'invalid-event', 'event signature does not verify');
-      }
-    }
-
-    const expectedId = await eventId(event);
-    if (expectedId !== event.id) {
-      throw httpError(400, 'invalid-event', 'event id does not match its content');
-    }
-
-    const nextEvents = [...events, event].slice(-MAX_EVENTS_PER_DID);
-    const nextResolution = await reduceEvents(did, nextEvents);
-    if (!nextResolution.events.some((candidate) => candidate.id === event.id)) {
-      throw httpError(400, 'invalid-event', 'the event did not join the canonical demo log');
-    }
-
-    const blockNumber = store.blockHeight + 1;
-    const now = new Date().toISOString();
-    store.blockHeight = blockNumber;
-    store.dids[did] = nextEvents;
-    writeStore(store);
-
-    const receipt = {
-      eventId: event.id,
-      eventType: event.type,
-      eventSeq: event.seq,
-      deployId: randomB64url(32),
-      submittedAt: now,
-      confirmedAt: now,
-      blockHash: demoBlockHash(blockNumber),
-      blockNumber,
-      postStateHash: randomB64url(32),
-      static: true,
-      simulated: true,
-      term: `@"${anchorName(did, 'byoid')}"!(${JSON.stringify(b64url(utf8(JSON.stringify(event))))})`,
+  function decorate(did, resolution, sourceKind = 'rholo') {
+    const name = anchorName(did, 'byoid');
+    return {
+      ...resolution,
+      anchorName: name,
+      source: {
+        node: LIVE_URL,
+        name,
+        block: resolution.block || null,
+        live: sourceKind === 'rholo',
+        evidence: sourceKind !== 'rholo',
+      },
     };
-    const finalResolution = await withResolutionMetadata(did, nextResolution, store);
-    return { receipt, resolution: finalResolution, event };
   }
 
-  function startJob(result) {
-    const job = jobs.create({ status: 'running', steps: [] });
-    job.steps = PROGRESS_STEPS.map((step) => ({
-      ...step,
-      status: 'done',
-      detail:
-        step.key === 'submitted'
-          ? result.receipt.deployId.slice(0, 12)
-          : step.key === 'included'
-            ? `demo block ${result.receipt.blockNumber}`
-            : '',
-    }));
-    job.status = 'done';
-    job.receipt = result.receipt;
-    job.resolution = result.resolution;
-    job.event = result.event;
+  async function resolve(did) {
+    if (!isDid(did)) throw httpError(400, 'invalid-did', 'a valid did:byoid identifier is required');
+    let chainError = null;
+    let resolution = null;
+    try {
+      resolution = await client.resolveDid(did);
+    } catch (error) {
+      chainError = error;
+    }
+    if (resolution?.status?.valid) return decorate(did, resolution, 'rholo');
+
+    const fallbackEvents = evidence.get(did);
+    if (fallbackEvents?.length) {
+      const fallback = await reduceEvents(did, fallbackEvents);
+      if (fallback.status.valid) return decorate(did, fallback, 'evidence');
+    }
+
+    if (chainError) {
+      throw httpError(
+        502,
+        'chain-unavailable',
+        `could not read the rholo anchor: ${chainError.message}`,
+      );
+    }
+    return decorate(did, resolution, 'rholo');
+  }
+
+  async function inspect(did, event) {
+    if (!isDid(did)) throw httpError(400, 'invalid-did', 'a valid did:byoid identifier is required');
+    try {
+      validateEventShape(event);
+    } catch (error) {
+      throw httpError(400, 'invalid-event', error.message);
+    }
+    if (event.did !== did) {
+      throw httpError(400, 'did-mismatch', 'event.did does not match the requested DID');
+    }
+    const expectedId = await eventId(event);
+    if (event.id !== expectedId) {
+      throw httpError(400, 'bad-event-id', 'event id is not the hash of its content');
+    }
+
+    if (event.type === EVENT_TYPES.CREATE) {
+      const derived = await didFromPublicJwk(event.payload.publicKeyJwk);
+      if (derived !== did) {
+        throw httpError(400, 'did-key-mismatch', 'DID is not derived from the create event key');
+      }
+      if (!(await verifyEventSignature(event.payload.publicKeyJwk, event))) {
+        throw httpError(400, 'bad-signature', 'create event signature does not verify');
+      }
+      const resolution = await resolve(did);
+      if (resolution.status.valid) {
+        if (resolution.createEvent?.id === event.id) {
+          return { alreadyAnchored: true, resolution };
+        }
+        throw httpError(409, 'did-already-exists', 'this DID already has a create event on chain', {
+          resolution,
+        });
+      }
+      return { alreadyAnchored: false, resolution };
+    }
+
+    const resolution = await resolve(did);
+    if (!resolution.status.valid) {
+      throw httpError(404, 'did-not-found', 'no valid create event for this DID', { resolution });
+    }
+    if (resolution.deactivated) {
+      throw httpError(409, 'did-deactivated', 'this DID has been deactivated', { resolution });
+    }
+    if (resolution.events.some((candidate) => candidate.id === event.id)) {
+      return { alreadyAnchored: true, resolution };
+    }
+    if (event.seq !== resolution.status.latestSeq + 1) {
+      throw httpError(
+        409,
+        'stale-sequence',
+        `event seq ${event.seq} does not extend the chain tip (${resolution.status.latestSeq}); re-sign and retry`,
+        { resolution },
+      );
+    }
+    if (event.prev !== resolution.status.latestEventId) {
+      throw httpError(
+        409,
+        'stale-sequence',
+        'event prev does not point at the current chain tip; re-sign and retry',
+        { resolution },
+      );
+    }
+    if (!(await verifyEventSignature(resolution.publicKeyJwk, event))) {
+      throw httpError(400, 'bad-signature', 'event signature does not verify with the DID key', {
+        resolution,
+      });
+    }
+    if (event.type === EVENT_TYPES.LINK && !PROVIDER_IDS.includes(event.payload.provider)) {
+      throw httpError(
+        400,
+        'provider-not-supported',
+        `unsupported identity provider: ${event.payload.provider}`,
+      );
+    }
+    return { alreadyAnchored: false, resolution };
+  }
+
+  function applyProgress(jobId, progress) {
+    switch (progress.step) {
+      case 'validating':
+        jobs.setStep(jobId, 'validated', 'active');
+        break;
+      case 'validated':
+        jobs.setStep(jobId, 'validated', 'done');
+        break;
+      case 'submitting':
+        jobs.setStep(jobId, 'submitted', 'active');
+        break;
+      case 'submitted':
+        jobs.setStep(
+          jobId,
+          'submitted',
+          'done',
+          progress.deployId ? `${progress.deployId.slice(0, 12)}…` : '',
+        );
+        jobs.setStep(jobId, 'executed', 'active');
+        break;
+      case 'executed':
+        jobs.setStep(jobId, 'executed', 'done');
+        jobs.setStep(jobId, 'included', 'active');
+        break;
+      case 'included':
+        jobs.setStep(
+          jobId,
+          'included',
+          'done',
+          progress.block?.blockNumber !== undefined ? `block ${progress.block.blockNumber}` : '',
+        );
+        jobs.setStep(jobId, 'observed', 'active');
+        break;
+      case 'observed':
+        jobs.setStep(jobId, 'observed', 'done');
+        break;
+      default:
+        break;
+    }
+  }
+
+  function startJob(did, event) {
+    const job = jobs.create({ did, event });
+    jobs.run(job.id, async () => {
+      applyProgress(job.id, { step: 'validating' });
+      const inspection = await inspect(did, event);
+      if (inspection.alreadyAnchored) {
+        applyProgress(job.id, { step: 'validated' });
+        return { alreadyAnchored: true, resolution: inspection.resolution };
+      }
+      applyProgress(job.id, { step: 'validated' });
+      const receipt = await client.anchorEvent(did, event, {
+        onProgress: (progress) => applyProgress(job.id, progress),
+      });
+      const resolution = await resolve(did);
+      if (!resolution.events.some((candidate) => candidate.id === event.id)) {
+        throw httpError(
+          409,
+          'anchor-not-in-chain',
+          'the deploy executed but this event is not in the canonical DID log',
+        );
+      }
+      return { receipt, resolution };
+    });
     return job;
   }
 
-  async function ingestEvidence(presentation) {
-    const evidence = presentation?.byoidEvidence;
-    if (!evidence) return 0;
-    const list = Array.isArray(evidence) ? evidence : [evidence];
-    const store = readStore();
+  async function chainStatus() {
+    if (chainStatusCache.body && Date.now() - chainStatusCache.at < 1200) {
+      return chainStatusCache.body;
+    }
+    const [status, capabilities, latestBlock] = await Promise.allSettled([
+      client.getStatus(),
+      client.getCapabilities(),
+      client.latestBlock(),
+    ]);
+    const errors = [];
+    if (status.status === 'rejected') errors.push(`status: ${status.reason.message}`);
+    if (capabilities.status === 'rejected') errors.push(`capabilities: ${capabilities.reason.message}`);
+    if (latestBlock.status === 'rejected') errors.push(`latest block: ${latestBlock.reason.message}`);
+    const body = {
+      ok: status.status === 'fulfilled',
+      static: true,
+      live: true,
+      url: LIVE_URL,
+      fetchedAt: new Date().toISOString(),
+      status: status.status === 'fulfilled' ? status.value : null,
+      capabilities: capabilities.status === 'fulfilled' ? capabilities.value : null,
+      latestBlock: latestBlock.status === 'fulfilled' ? latestBlock.value : null,
+      errors,
+    };
+    chainStatusCache = { at: Date.now(), body };
+    return body;
+  }
+
+  async function ingestEvidence(document) {
+    const list = document?.byoidEvidence;
+    if (!list) return 0;
+    const entries = Array.isArray(list) ? list : [list];
     let added = 0;
-    for (const entry of list) {
+    for (const entry of entries) {
       if (!entry || !isDid(entry.did) || !Array.isArray(entry.events)) continue;
-      const existing = store.dids[entry.did] || [];
+      const existing = evidence.get(entry.did) || [];
       for (const event of entry.events) {
         if (!event || event.did !== entry.did) continue;
         if (existing.some((candidate) => candidate.id === event.id)) continue;
         existing.push(event);
         added += 1;
       }
-      store.dids[entry.did] = existing.slice(-MAX_EVENTS_PER_DID);
+      evidence.set(entry.did, existing.slice(-MAX_EVIDENCE_EVENTS));
     }
-    if (added) writeStore(store);
     return added;
   }
 
   function evidenceFor(did) {
-    const { events } = collectEvents(did, wallet());
-    return events;
+    return walletEvents(wallet()).filter((event) => event.did === did);
   }
 
   async function request(path, { method = 'GET', body } = {}) {
     const url = new URL(path, window.location.origin);
     const pathname = url.pathname;
     const verb = String(method || 'GET').toUpperCase();
-
-    if (verb === 'GET' && pathname === '/api/config') return config();
-    if (verb === 'GET' && pathname === '/api/chain/status') return chainStatus();
-    if (verb === 'GET' && pathname === '/api/agent') {
-      return { ...(await agentInfo()), chainWrites: true, agentName: AGENT_NAME };
-    }
-    if (verb === 'POST' && pathname === '/api/agent/anchor') {
-      const info = await agentInfo();
-      return { anchor: info.chainAnchor, agent: info };
-    }
-
-    if (verb === 'GET' && pathname.startsWith('/api/did/')) {
-      const did = decodeURIComponent(pathname.slice('/api/did/'.length));
-      return resolveDid(did, wallet());
-    }
-
-    if (verb === 'POST' && pathname === '/api/anchor') {
-      const result = await anchorEvent(body?.did, body?.event);
-      if (result.alreadyAnchored) {
-        return { alreadyAnchored: true, resolution: result.resolution };
+    try {
+      if (verb === 'GET' && pathname === '/api/config') return await config();
+      if (verb === 'GET' && pathname === '/api/chain/status') return await chainStatus();
+      if (verb === 'GET' && pathname === '/api/agent') {
+        return { ...(await agentInfo()), chainWrites: true, agentName: AGENT_NAME };
       }
-      const job = startJob(result);
-      return { jobId: job.id, status: 'queued', steps: job.steps, static: true };
-    }
-
-    if (verb === 'GET' && pathname.startsWith('/api/anchor/jobs/')) {
-      const id = decodeURIComponent(pathname.slice('/api/anchor/jobs/'.length));
-      const job = jobs.get(id);
-      if (!job) throw httpError(404, 'job-not-found', 'anchor job not found');
-      return job;
-    }
-
-    if (verb === 'POST' && pathname === '/api/verify') {
-      if (body?.presentation) {
-        await ingestEvidence(body.presentation);
-        const result = await verifyPresentation({
-          presentation: body.presentation,
-          resolveDid: (did) => resolveDid(did, wallet()),
-          agentPublicJwk: DEMO_AGENT_PUBLIC_JWK,
-          agentKid: AGENT_KID,
-        });
-        return result;
+      if (verb === 'POST' && pathname === '/api/agent/anchor') {
+        const info = await agentInfo();
+        return { anchor: info.chainAnchor, agent: info };
       }
-      if (body?.credential) {
-        const issuer = body.credential.issuer;
-        if (!isDid(issuer)) {
+
+      if (verb === 'GET' && pathname.startsWith('/api/did/')) {
+        const did = decodeURIComponent(pathname.slice('/api/did/'.length));
+        return await resolve(did);
+      }
+
+      if (verb === 'POST' && pathname === '/api/anchor') {
+        const did = body?.did;
+        if (!body?.event || typeof body.event !== 'object') {
+          throw httpError(400, 'missing-event', 'an event object is required');
+        }
+        const job = startJob(did, body.event);
+        return {
+          jobId: job.id,
+          status: 'queued',
+          poll: `/api/anchor/jobs/${job.id}`,
+          steps: job.steps,
+          live: true,
+        };
+      }
+
+      if (verb === 'GET' && pathname.startsWith('/api/anchor/jobs/')) {
+        const id = decodeURIComponent(pathname.slice('/api/anchor/jobs/'.length));
+        const job = jobs.get(id);
+        if (!job) throw httpError(404, 'job-not-found', 'anchor job not found');
+        return job;
+      }
+
+      if (verb === 'POST' && pathname === '/api/verify') {
+        if (body?.presentation) {
+          await ingestEvidence(body.presentation);
+          return await verifyPresentation({
+            presentation: body.presentation,
+            resolveDid: (did) => resolve(did),
+            agentPublicJwk: DEMO_AGENT_PUBLIC_JWK,
+            agentKid: AGENT_KID,
+          });
+        }
+        if (body?.credential) {
+          await ingestEvidence(body.credential);
+          const issuer = body.credential.issuer;
+          if (!isDid(issuer)) {
+            throw httpError(400, 'invalid-did', 'a valid did:byoid identifier is required');
+          }
+          const resolution = await resolve(issuer);
+          return await verifyCredential({
+            credential: body.credential,
+            resolution,
+            agentPublicJwk: DEMO_AGENT_PUBLIC_JWK,
+            agentKid: AGENT_KID,
+          });
+        }
+        throw httpError(400, 'missing-document', 'send { presentation } or { credential }');
+      }
+
+      if (verb === 'GET' && pathname.startsWith('/api/chain/deploy/')) {
+        const deployId = decodeURIComponent(pathname.slice('/api/chain/deploy/'.length));
+        return await client.getDeployStatus(deployId);
+      }
+      if (verb === 'GET' && pathname.startsWith('/api/chain/block/')) {
+        const hash = decodeURIComponent(pathname.slice('/api/chain/block/'.length));
+        return await client.getBlock(hash);
+      }
+
+      if (verb === 'GET' && pathname === '/api/session') {
+        const current = wallet();
+        return { hasSession: Boolean(current), did: current?.did || null, pendingLink: null };
+      }
+      if (verb === 'POST' && pathname === '/api/session/consume-link') {
+        return { link: null };
+      }
+
+      if (verb === 'POST' && pathname === '/api/demo/link') {
+        const did = body?.did;
+        if (!isDid(did)) {
           throw httpError(400, 'invalid-did', 'a valid did:byoid identifier is required');
         }
-        const resolution = await resolveDid(issuer, wallet());
-        return verifyCredential({
-          credential: body.credential,
-          resolution,
-          agentPublicJwk: DEMO_AGENT_PUBLIC_JWK,
-          agentKid: AGENT_KID,
-        });
+        const profile = demoProfile(body?.provider, body?.profileId);
+        const attestation = await signAttestation(profile, did);
+        return {
+          link: {
+            provider: profile.provider,
+            did,
+            profile,
+            subjectHash: attestation.subjectHash,
+            attestation: attestation.attestation,
+            attestationHash: attestation.attestationHash,
+            issuedAt: attestation.issuedAt,
+            linkedAt: new Date().toISOString(),
+            demo: true,
+          },
+        };
       }
-      throw httpError(400, 'missing-document', 'send { presentation } or { credential }');
-    }
 
-    if (verb === 'GET' && pathname.startsWith('/api/chain/deploy/')) {
-      return {
-        static: true,
-        deployId: decodeURIComponent(pathname.slice('/api/chain/deploy/'.length)),
-        note: 'Static GitHub Pages demo: deploy status is simulated locally.',
-      };
-    }
-    if (verb === 'GET' && pathname.startsWith('/api/chain/block/')) {
-      return {
-        static: true,
-        blockHash: decodeURIComponent(pathname.slice('/api/chain/block/'.length)),
-        note: 'Static GitHub Pages demo: block data is simulated locally.',
-      };
-    }
-
-    if (verb === 'GET' && pathname === '/api/session') {
-      const current = wallet();
-      return { hasSession: Boolean(current), did: current?.did || null, pendingLink: null };
-    }
-    if (verb === 'POST' && pathname === '/api/session/consume-link') {
-      return { link: null };
-    }
-
-    if (verb === 'POST' && pathname === '/api/demo/link') {
-      const did = body?.did;
-      if (!isDid(did)) {
-        throw httpError(400, 'invalid-did', 'a valid did:byoid identifier is required');
+      throw httpError(404, 'not-found', `no static demo route for ${pathname}`);
+    } catch (error) {
+      if (error instanceof RholoWebError) {
+        throw httpError(error.status || 502, error.code || 'rholo-error', error.message);
       }
-      const profile = demoProfile(body?.provider, body?.profileId);
-      const attestation = await signAttestation(profile, did);
-      return {
-        link: {
-          provider: profile.provider,
-          did,
-          profile,
-          subjectHash: attestation.subjectHash,
-          attestation: attestation.attestation,
-          attestationHash: attestation.attestationHash,
-          issuedAt: attestation.issuedAt,
-          linkedAt: new Date().toISOString(),
-          demo: true,
-        },
-      };
+      throw error;
     }
-
-    throw httpError(404, 'not-found', `no static demo route for ${pathname}`);
   }
 
   return {
@@ -622,5 +709,6 @@ export function createStaticBackend({ getWallet = readWalletSnapshot } = {}) {
     publicJwk: DEMO_AGENT_PUBLIC_JWK,
     kid: AGENT_KID,
     issuer: AGENT_ISSUER,
+    liveChain: true,
   };
 }

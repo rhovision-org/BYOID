@@ -13,7 +13,9 @@ BYOID/
 │   ├── app.js
 │   ├── shared.js
 │   ├── provider-catalog.js
-│   ├── static-mode.js    # browser-only backend for GitHub Pages
+│   ├── static-mode.js    # browser backend: live rholo writes for Pages
+│   ├── rholo-web.js      # deploy signing / tuple-space client for browsers
+│   ├── vendor/           # bundled MIT crypto (noble curves/hashes, bs58)
 │   └── styles.css
 ├── src/                  # Node server, rholo client, OAuth adapters
 ├── test/                 # node:test unit tests

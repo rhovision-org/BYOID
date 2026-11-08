@@ -37,10 +37,12 @@ Historical related work includes the earlier [DigitalLifeCollective/byoid](https
 **[jimscarver.com/BYOID](https://jimscarver.com/BYOID/)**  
 (GitHub Pages project site; `jimscarver.github.io/BYOID` redirects here.)
 
-The GitHub Pages build is a browser-only demo. DID keys, credentials, selective
-disclosure and verification are real and run locally in your browser; the
-public rholo anchor is simulated in local storage so the page works without a
-server. The footer and banner label this clearly.
+The GitHub Pages build runs without a Node server but uses the real rholo
+playground. The browser generates a local devnet phlo key, requests test REV
+from the playground faucet, signs and submits its own deploys, and reads the
+DID event log back from the public tuple-space name. DID keys, credentials and
+selective disclosure remain browser-local. OAuth provider sign-in is simulated
+in demo mode because client secrets cannot live in a static site.
 
 ## Run the full POC locally
 
@@ -67,6 +69,8 @@ you set their OAuth client id/secret pairs in `.env` (see `.env.example`).
 5. A verifier that resolves the issuer DID, checks the event chain, attestations,
    disclosed-field hashes and revocations using the same shared code as the
    server.
+6. A **New identity** action that removes the current browser wallet and anchors
+   a fresh DID, reusing the same local devnet phlo key.
 
 Design notes: [architecture](docs/architecture.md) ·
 [DID method draft](docs/did-method.md).

@@ -62,9 +62,9 @@ const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
 // GitHub Pages has no Node process. In static mode, API calls are served by a
-// browser-local implementation that keeps the same request/response shapes.
+// browser-local backend that writes directly to the live rholo playground.
 const staticBackend = STATIC_MODE ? createStaticBackend({ getWallet: () => state.wallet }) : null;
-const CHAIN_LABEL = STATIC_MODE ? 'static demo' : 'rholo playground';
+const CHAIN_LABEL = 'rholo playground';
 
 // ── formatting / small helpers ──────────────────────────────────────────────
 
@@ -438,16 +438,24 @@ function mergeResolutionIntoWallet(resolution) {
       (revocation) => revocation.credentialId === credential.id,
     );
   }
+  const resolvedBlock = Number(resolution.block?.blockNumber);
+  if (Number.isFinite(resolvedBlock) && state.chain?.status) {
+    state.chain.status.latestBlockNumber = Math.max(
+      Number(state.chain.status.latestBlockNumber) || 0,
+      resolvedBlock,
+    );
+    if (state.chain.latestBlock) state.chain.latestBlock.blockNumber = resolvedBlock;
+  }
 }
 
 // ── anchor jobs / progress ──────────────────────────────────────────────────
 
 const PROGRESS_STEPS = [
   { key: 'validated', label: 'Signature and sequence checked' },
-  { key: 'submitted', label: STATIC_MODE ? 'Event accepted by the static demo' : 'Deploy accepted by rholo' },
+  { key: 'submitted', label: 'Deploy accepted by rholo' },
   { key: 'executed', label: 'Executed without error' },
-  { key: 'included', label: STATIC_MODE ? 'Added to the demo block height' : 'Included in a block' },
-  { key: 'observed', label: STATIC_MODE ? 'Readable at the demo anchor name' : 'Observed at the DID anchor name' },
+  { key: 'included', label: 'Included in a block' },
+  { key: 'observed', label: 'Observed at the DID anchor name' },
 ];
 
 function renderProgress() {
@@ -489,7 +497,7 @@ function renderProgress() {
       </div>
       ${
         progress.receipt
-          ? `<div class="progress-foot"><span class="mono">${esc(shortId(progress.receipt.deployId || '', 12, 8))}</span><span>${STATIC_MODE ? 'demo ' : ''}block ${esc(progress.receipt.blockNumber)}</span></div>`
+          ? `<div class="progress-foot"><span class="mono">${esc(shortId(progress.receipt.deployId || '', 12, 8))}</span><span>block ${esc(progress.receipt.blockNumber)}</span></div>`
           : progress.jobId
             ? `<div class="progress-foot"><span class="mono">job ${esc(shortId(progress.jobId, 10, 6))}</span><span>${esc(CHAIN_LABEL)}</span></div>`
             : ''
@@ -849,9 +857,38 @@ async function clearWallet() {
   state.resolution = null;
   state.selectedCredentials = new Set();
   state.verifier = { status: 'idle', presentation: null, result: null, error: null };
+  state.didCache.clear();
   state.modal = null;
   renderAll();
   toast({ kind: 'ok', title: 'Wallet cleared from this browser' });
+}
+
+async function startOverWithNewIdentity() {
+  if (state.wallet) {
+    const ok = window.confirm(
+      'Start over with a new identity? The current wallet key will be removed from this browser. Export it first if you want to keep it.',
+    );
+    if (!ok) return;
+  }
+  localStorage.removeItem(WALLET_KEY);
+  await idbDelete(PRIVATE_KEY_ID).catch(() => {});
+  state.wallet = null;
+  state.privateKey = null;
+  state.keyError = null;
+  state.resolution = null;
+  state.selectedCredentials = new Set();
+  state.verifier = { status: 'idle', presentation: null, result: null, error: null };
+  state.didCache.clear();
+  state.modal = null;
+  renderAll();
+  if (state.chain) {
+    toast({
+      kind: 'warn',
+      title: 'Starting over',
+      message: 'The previous wallet was removed locally. Creating and anchoring a new DID now…',
+    });
+  }
+  await createIdentity();
 }
 
 // ── provider linking ────────────────────────────────────────────────────────
@@ -1424,20 +1461,18 @@ function renderHeader() {
   if (chainPill && chainText) {
     if (status) {
       chainPill.classList.remove('is-offline');
-      chainText.textContent = STATIC_MODE
-        ? `static demo · #${status.latestBlockNumber ?? '—'}`
-        : `rholo · ${status.networkId || 'playground'} · #${status.latestBlockNumber ?? '—'}`;
+      chainText.textContent = `rholo · ${status.networkId || 'playground'} · #${status.latestBlockNumber ?? '—'}`;
       chainPill.title = status.version?.node || state.config?.chain?.url || '';
     } else {
       chainPill.classList.add('is-offline');
-      chainText.textContent = STATIC_MODE ? 'static demo' : 'rholo unreachable';
+      chainText.textContent = 'rholo unreachable';
     }
   }
   if (modePill) {
     const live = (state.config?.providers || []).filter((provider) => provider.mode === 'live').length;
     if (STATIC_MODE) {
-      modePill.className = 'pill pill-demo';
-      modePill.textContent = 'GitHub Pages demo';
+      modePill.className = 'pill pill-live';
+      modePill.textContent = 'GitHub Pages · live chain';
     } else if (live) {
       modePill.className = 'pill pill-live';
       modePill.textContent = `${live} live provider${live === 1 ? '' : 's'}`;
@@ -1573,10 +1608,7 @@ function avatarHtml(seed, label, { small = false } = {}) {
 }
 
 function statusBadge(status) {
-  if (STATIC_MODE && (status === 'anchored' || status === 'done')) {
-    return '<span class="badge badge-ok">anchored in demo</span>';
-  }
-  if (status === 'demo') return '<span class="badge badge-warn">static demo key</span>';
+  if (status === 'demo') return '<span class="badge badge-warn">demo link agent</span>';
   if (status === 'anchored' || status === 'done') return '<span class="badge badge-ok">anchored on rholo</span>';
   if (status === 'error' || status === 'failed') return '<span class="badge badge-err">anchor failed</span>';
   if (status === 'anchoring' || status === 'running') return '<span class="badge badge-accent">anchoring…</span>';
@@ -1609,7 +1641,7 @@ function renderOnboarding() {
         </p>
         <div class="onboarding-points">
           <div class="onboarding-point"><span class="tick">✓</span><span><strong>One DID.</strong> Google, GitHub and Facebook become linked personas under it, not separate logins.</span></div>
-          <div class="onboarding-point"><span class="tick">✓</span><span><strong>One anchor.</strong> A signed, hash-linked event log lives at a public name ${STATIC_MODE ? '(simulated locally in this browser demo).' : 'on the rholo playground.'}</span></div>
+          <div class="onboarding-point"><span class="tick">✓</span><span><strong>One anchor.</strong> A signed, hash-linked event log lives at a public name on the rholo playground.</span></div>
           <div class="onboarding-point"><span class="tick">✓</span><span><strong>One proof.</strong> Credentials are signed in your browser and disclose only the fields you tick.</span></div>
         </div>
         <div class="onboarding-actions">
@@ -1649,15 +1681,15 @@ function renderIdentityCard() {
     { label: 'Key generated in this browser', status: 'done' },
     { label: 'Create event signed by your DID key', status: wallet.createEvent ? 'done' : 'pending' },
     {
-      label: STATIC_MODE ? 'Event accepted by the static demo' : 'Deploy accepted by rholo',
+      label: 'Deploy accepted by rholo',
       status: wallet.createReceipt ? 'done' : wallet.createError ? 'failed' : 'pending',
     },
     {
-      label: STATIC_MODE ? 'Added to the demo block height' : 'Included in a block',
+      label: 'Included in a block',
       status: wallet.createReceipt?.blockNumber ? 'done' : wallet.createError ? 'failed' : 'pending',
     },
     {
-      label: STATIC_MODE ? 'Readable at the demo anchor name' : 'Observed at the DID anchor name',
+      label: 'Observed at the DID anchor name',
       status: createAnchored ? 'done' : wallet.createError ? 'failed' : 'pending',
     },
   ];
@@ -1667,7 +1699,7 @@ function renderIdentityCard() {
       <div class="card-head">
         <div>
           <p class="eyebrow">Step 1 · your self-sovereign identity</p>
-          <h2>${createAnchored ? (STATIC_MODE ? 'Anchored in the demo log' : 'Anchored on rholo') : 'Your identity is local'}</h2>
+          <h2>${createAnchored ? 'Anchored on rholo' : 'Your identity is local'}</h2>
         </div>
         ${statusBadge(status)}
       </div>
@@ -1684,7 +1716,7 @@ function renderIdentityCard() {
       </div>
       <div class="meta-grid">
         <div class="meta-item"><span class="label">Anchor name</span><span class="value mono">${esc(anchorNameValue)}</span></div>
-        <div class="meta-item"><span class="label">Chain</span><span class="value">${STATIC_MODE ? 'GitHub Pages demo' : 'rholo playground'}${block ? ` · ${STATIC_MODE ? 'demo ' : ''}block ${esc(block)}` : ''}</span></div>
+        <div class="meta-item"><span class="label">Chain</span><span class="value">rholo playground${block ? ` · block ${esc(block)}` : ''}</span></div>
         <div class="meta-item"><span class="label">Created</span><span class="value">${esc(fmtDate(wallet.createdAt))}</span></div>
         <div class="meta-item"><span class="label">Event log</span><span class="value">${resolution?.status?.valid ? `${resolution.status.eventCount} event(s), seq ${resolution.status.latestSeq}` : 'not yet readable'}</span></div>
       </div>
@@ -1702,6 +1734,7 @@ function renderIdentityCard() {
         }
         <button class="btn btn-ghost btn-sm" data-action="export-wallet">${uiIcon('download')} Export</button>
         <button class="btn btn-ghost btn-sm" data-action="open-import">${uiIcon('upload')} Import</button>
+        <button class="btn btn-ghost btn-sm" data-action="new-identity">${uiIcon('key')} New identity</button>
       </div>
     </div>
   `;
@@ -1728,9 +1761,9 @@ function renderProviderCard(provider) {
        <p class="provider-note">
          ${
            link.receipt
-             ? `Link event anchored in ${STATIC_MODE ? 'demo ' : ''}block ${esc(link.receipt.blockNumber)}.`
+             ? `Link event anchored in block ${esc(link.receipt.blockNumber)}.`
              : link.anchored
-               ? `Link event observed ${STATIC_MODE ? 'in the demo log' : 'on chain'}.`
+               ? 'Link event observed on chain.'
                : link.anchorError
                  ? `Anchor error: ${esc(link.anchorError)}`
                  : 'Link event is waiting for its anchor confirmation.'
@@ -2033,7 +2066,7 @@ function renderVerificationResult() {
               .join('')}</details>`
           : ''
       }
-      <div class="section-subhead"><h4>Evidence</h4><span class="badge badge-quiet">${STATIC_MODE ? 'static demo' : 'rholo playground'}</span></div>
+      <div class="section-subhead"><h4>Evidence</h4><span class="badge badge-quiet">rholo playground</span></div>
       <div class="chain-status-list">
         ${issuerDids
           .map(
@@ -2041,7 +2074,7 @@ function renderVerificationResult() {
           <div class="chain-status-row"><span>Issuer DID</span><span>${esc(shortId(did, 26, 10))}</span></div>`,
           )
           .join('')}
-        <div class="chain-status-row"><span>${STATIC_MODE ? 'Demo height' : 'Resolved at block'}</span><span>${esc(block ?? '—')}</span></div>
+        <div class="chain-status-row"><span>Resolved at block</span><span>${esc(block ?? '—')}</span></div>
         <div class="chain-status-row"><span>Agent key</span><span>${esc(state.agent?.fingerprint || '—')}</span></div>
         <div class="chain-status-row"><span>Link events</span><span>${esc(linkEvents.length ? linkEvents.map((link) => `seq ${link.seq} · ${link.provider}`).join(', ') : '—')}</span></div>
       </div>
@@ -2075,14 +2108,10 @@ function renderChainEvent(event) {
          <div class="event-meta"><span class="label">State hash</span><span class="value">${esc(shortId(receipt.stateHash || receipt.blockHash || '', 22, 10))}</span></div>
          <div class="event-meta"><span class="label">Confirmed</span><span class="value">${esc(fmtDate(receipt.confirmedAt))}</span></div>
        </div>
-       ${
-         STATIC_MODE
-           ? '<div class="card-actions"><span class="badge badge-warn">simulated receipt · GitHub Pages demo</span></div>'
-           : `<div class="card-actions">
-         <a class="btn btn-ghost btn-sm" href="/api/chain/deploy/${encodeURIComponent(receipt.deployId)}" target="_blank" rel="noreferrer">${uiIcon('external')} deploy status</a>
-         <a class="btn btn-ghost btn-sm" href="/api/chain/block/${encodeURIComponent(receipt.blockHash)}" target="_blank" rel="noreferrer">${uiIcon('external')} block JSON</a>
+       <div class="card-actions">
+         <a class="btn btn-ghost btn-sm" href="${STATIC_MODE ? 'https://playground.rhobot.net/api/v1/deploy-status' : '/api/chain/deploy'}/${encodeURIComponent(receipt.deployId)}" target="_blank" rel="noreferrer">${uiIcon('external')} deploy status</a>
+         <a class="btn btn-ghost btn-sm" href="${STATIC_MODE ? 'https://playground.rhobot.net/api/v1/block' : '/api/chain/block'}/${encodeURIComponent(receipt.blockHash)}" target="_blank" rel="noreferrer">${uiIcon('external')} block JSON</a>
        </div>`
-       }`
     : `<p class="small muted">This event is in the canonical chain, but this browser does not have its deploy receipt. It may have been written from another device.</p>`;
   return `
     <details class="event-item">
@@ -2092,7 +2121,7 @@ function renderChainEvent(event) {
           <strong>${esc(eventTypeLabel(event.type))}</strong>
           <span>${esc(fmtDate(event.at))} · ${esc(shortId(event.id, 20, 10))}</span>
         </span>
-        <span class="badge badge-ok">${STATIC_MODE ? 'demo log' : 'on chain'}</span>
+        <span class="badge badge-ok">on chain</span>
       </summary>
       <div class="event-body">
         ${receiptHtml}
@@ -2142,12 +2171,16 @@ function renderChain() {
           <div><p class="eyebrow">Link agent</p><h2>Attestation key</h2></div>
           ${statusBadge(state.agent?.chainAnchor?.status || 'idle')}
         </div>
-        <p class="card-lede">The agent verifies provider profiles and signs hash-only attestations. Its public key is self-signed and published once at <span class="mono-inline">${esc(state.config?.chain?.agentName || 'byoid:agent:key')}</span>.</p>
+        <p class="card-lede">${STATIC_MODE ? 'This browser-only build embeds a public demo link-agent key. It signs hash-only demo attestations; the DID event log itself is anchored live on the rholo playground.' : `The agent verifies provider profiles and signs hash-only attestations. Its public key is self-signed and published once at <span class="mono-inline">${esc(state.config?.chain?.agentName || 'byoid:agent:key')}</span>.`}</p>
         <div class="chain-status-list">
           <div class="chain-status-row"><span>Fingerprint</span><span>${esc(state.agent?.fingerprint || '—')}</span></div>
           <div class="chain-status-row"><span>Issuer / kid</span><span>${esc(state.agent?.issuer || '—')} · ${esc(state.agent?.kid || '—')}</span></div>
-          <div class="chain-status-row"><span>Anchor block</span><span>${esc(state.agent?.chainAnchor?.blockNumber ?? '—')}</span></div>
-          <div class="chain-status-row"><span>Anchor deploy</span><span>${esc(shortId(state.agent?.chainAnchor?.deployId || '', 18, 10) || '—')}</span></div>
+          ${
+            STATIC_MODE
+              ? '<div class="chain-status-row"><span>Mode</span><span>embedded demo key</span></div>'
+              : `<div class="chain-status-row"><span>Anchor block</span><span>${esc(state.agent?.chainAnchor?.blockNumber ?? '—')}</span></div>
+          <div class="chain-status-row"><span>Anchor deploy</span><span>${esc(shortId(state.agent?.chainAnchor?.deployId || '', 18, 10) || '—')}</span></div>`
+          }
         </div>
         ${
           state.agent?.chainAnchor?.status === 'error'
@@ -2155,7 +2188,7 @@ function renderChain() {
             : ''
         }
         <div class="card-actions" style="margin-top:12px">
-          <button class="btn btn-secondary btn-sm" data-action="anchor-agent">${uiIcon('layers')} Publish / refresh key</button>
+          ${STATIC_MODE ? '' : `<button class="btn btn-secondary btn-sm" data-action="anchor-agent">${uiIcon('layers')} Publish / refresh key</button>`}
           <button class="btn btn-ghost btn-sm" data-action="refresh-chain">${uiIcon('refresh')} Refresh chain</button>
         </div>
       </div>
@@ -2172,7 +2205,7 @@ function renderChain() {
                  <div class="chain-status-row"><span>Canonical events</span><span>${esc(resolution?.status?.eventCount ?? 0)}</span></div>
                  <div class="chain-status-row"><span>Latest sequence</span><span>${esc(resolution?.status?.latestSeq ?? 0)}</span></div>
                  <div class="chain-status-row"><span>Rejected / forked</span><span>${esc(resolution?.status?.rejectedCount ?? 0)} / ${resolution?.status?.forked ? 'yes' : 'no'}</span></div>
-                 <div class="chain-status-row"><span>${STATIC_MODE ? 'Demo height' : 'Read at block'}</span><span>${esc(resolution?.block?.blockNumber ?? '—')}</span></div>
+                 <div class="chain-status-row"><span>Read at block</span><span>${esc(resolution?.block?.blockNumber ?? '—')}</span></div>
                </div>
                ${resolution?.status?.errors?.length ? `<div class="progress-error">${esc(resolution.status.errors.join(' · '))}</div>` : ''}
                <div class="card-actions" style="margin-top:12px">
@@ -2189,20 +2222,20 @@ function renderChain() {
         <div><p class="eyebrow">The audit trail</p><h2>Signed event log</h2></div>
         <span class="badge badge-quiet">${events.length} canonical event(s)</span>
       </div>
-      <p class="card-lede">${STATIC_MODE ? 'Each event is signed by the DID key and points at the previous event id. This GitHub Pages demo keeps the log in your browser and applies the same signature, gap and fork checks as the Node app.' : 'Each event is signed by the DID key and points at the previous event id. The chain is read back from a public tuple-space name; the app rejects invalid signatures, gaps and forks rather than trusting whatever is written there.'}</p>
-      ${events.length ? `<div class="event-list">${events.map(renderChainEvent).join('')}</div>` : `<div class="empty-card" style="padding:24px"><div class="empty-icon">◌</div><h3>No events in the demo log yet</h3><p>${wallet ? 'Anchor your DID to start the log.' : 'Create an identity first.'}</p></div>`}
+      <p class="card-lede">Each event is signed by the DID key and points at the previous event id. The chain is read back from a public tuple-space name; the app rejects invalid signatures, gaps and forks rather than trusting whatever is written there.</p>
+      ${events.length ? `<div class="event-list">${events.map(renderChainEvent).join('')}</div>` : `<div class="empty-card" style="padding:24px"><div class="empty-icon">◌</div><h3>No events on chain yet</h3><p>${wallet ? 'Anchor your DID to start the log.' : 'Create an identity first.'}</p></div>`}
     </div>
 
-    <div class="section-title-row"><div><p class="section-kicker">${STATIC_MODE ? 'How the anchor is shaped' : 'How the anchor is written'}</p><h2>${STATIC_MODE ? 'The anchor term' : 'The actual Rholang'}</h2></div></div>
+    <div class="section-title-row"><div><p class="section-kicker">How the anchor is written</p><h2>The actual Rholang</h2></div></div>
     <div class="card">
-      <p class="card-lede">${STATIC_MODE ? 'The Node app writes this base64url JSON event to a public rholo name. This browser-only demo simulates that write locally, keeping the same signed shape:' : 'A public name receives one base64url-encoded JSON event. No quoting or escaping is needed inside the string, so the term is exactly this shape:'}</p>
+      <p class="card-lede">A public name receives one base64url-encoded JSON event. No quoting or escaping is needed inside the string, so the term is exactly this shape:</p>
       <pre class="code-block">${esc(sampleTerm || '@"byoid:did:z…"!("<base64url event>")')}</pre>
       <details class="raw-details"><summary>Decoded event</summary><pre class="code-block">${esc(JSON.stringify(sampleEvent || { note: 'create an identity to see a signed event' }, null, 2))}</pre></details>
     </div>
 
     <div class="info-split" style="margin-top:16px">
       <div class="info-box">
-        <h4>${STATIC_MODE ? 'What the signed demo log proves' : 'What the chain proves'}</h4>
+        <h4>What the chain proves</h4>
         <ul>
           <li>The DID's create event is signed by its own key.</li>
           <li>Every later event is signed by that key and hash-linked to its predecessor.</li>
@@ -2659,6 +2692,9 @@ document.addEventListener('click', async (event) => {
       case 'create-identity':
         await createIdentity();
         break;
+      case 'new-identity':
+        await startOverWithNewIdentity();
+        break;
       case 'retry-create':
         await retryCreateAnchor();
         break;
@@ -2932,7 +2968,7 @@ async function boot() {
       root.innerHTML = `
         <div class="card">
           <div class="verdict bad"><div class="verdict-icon">!</div><div><h3>The app could not start</h3><p>${esc(error.message)}</p></div></div>
-          <p class="small muted">${STATIC_MODE ? 'The static demo failed to initialise. Reload the page to try again.' : 'Check that the BYOID server is running and that <span class="mono-inline">RHOLO_URL</span> points at a reachable rholo node.'}</p>
+          <p class="small muted">${STATIC_MODE ? 'The live GitHub Pages build could not initialise. Check that the rholo playground is reachable and reload.' : 'Check that the BYOID server is running and that <span class="mono-inline">RHOLO_URL</span> points at a reachable rholo node.'}</p>
           <button class="btn btn-secondary btn-sm" onclick="location.reload()">Reload</button>
         </div>`;
     }
