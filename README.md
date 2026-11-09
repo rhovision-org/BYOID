@@ -90,6 +90,7 @@ OAuth needs a server to hold client secrets and sign attestations.
 9. A **Report a bug / request a feature** link in the help dialog that opens the
    community issue tracker.
 
+Roadmap: [ROADMAP.md](ROADMAP.md) ·
 Design notes: [architecture](docs/architecture.md) ·
 [DID method draft](docs/did-method.md) ·
 [Live OAuth setup](docs/oauth.md) ·

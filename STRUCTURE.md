@@ -3,6 +3,7 @@
 ```
 BYOID/
 ├── README.md
+├── ROADMAP.md            # milestone-linked roadmap
 ├── .env.example          # optional live OAuth / rholo settings
 ├── .github/workflows/    # GitHub Pages static demo deployment
 ├── docs/
