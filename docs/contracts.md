@@ -49,7 +49,8 @@ a DID event signature on chain today. Two ways forward, for the method spec
   controller key, and the contract accepts later writes only from that
   deployer. The browser already makes a secp256k1 REV key for proof cards.
 - **Add a P-256 verify system process to rholo.** This is cleaner but needs a
-  rholo change, filed as an issue there.
+  rholo change, requested in
+  [rholo#560](https://github.com/rhovision-org/rholo/issues/560).
 
 The plan below assumes the first option.
 
