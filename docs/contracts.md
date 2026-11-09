@@ -89,12 +89,12 @@ modules that subscribe. Modules never write core state directly.
 | FreeTrust module | What it adds | Builds on |
 | --- | --- | --- |
 | Social contracts and personal rules | User policy contracts as above | Policy hooks |
-| MrE risk oracle | Signed risk scores posted by an off-chain scorer, keyed by presentation or DID | Attestations, #11 |
+| MrE risk scoring | Risk scores from the shared maximum relative entropy update: off chain with the `mre-core` crate ([quantum-os#260](https://github.com/rhovision-org/quantum-os/issues/260)), on chain with a `rho:mre:update` native ([rholo#562](https://github.com/rhovision-org/rholo/issues/562)). Spec and proofs in [QLF#221](https://github.com/rhovision-org/quantum-logical-framework/issues/221) | Attestations, #11 |
 | Anonymous one person, one vote | Grow-only nullifier set per poll, so each person votes once without revealing who | Proof of personhood, #18 |
 | Capabilities and UMA | Revocable forwarders (caretaker pattern) around unforgeable names; rholo's `ocapn` crate may help | #12 |
 | Notary | Hash anchoring with timestamps | `rho:crypto:blake2b256Hash`, `rho:block:data` |
 | Trust tokens | Pledges and thank-you credits, possibly via `rho:rchain:ertp:ledger` | Attestations |
-| rhogov link | Use `rho:gov:trustLevels` as one input to attestation weight | #18 |
+| rhogov link | Use `rho:gov:trustLevels`, or calibrated weights from [rhogov#119](https://github.com/rhovision-org/rhogov/issues/119), as one input to attestation weight | #18 |
 
 ## Order of work
 

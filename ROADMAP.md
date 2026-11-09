@@ -34,7 +34,7 @@ Build trust between people and measure how much a claim can be relied on.
 
 - [#9](https://github.com/rhovision-org/BYOID/issues/9) Web-of-trust peer attestations
 - [#10](https://github.com/rhovision-org/BYOID/issues/10) Passkeys and user-chosen authentication factors
-- [#11](https://github.com/rhovision-org/BYOID/issues/11) MrE risk scoring prototype (needs the existing MrE model)
+- [#11](https://github.com/rhovision-org/BYOID/issues/11) MrE risk scoring prototype (uses the shared MrE work: [QLF#221](https://github.com/rhovision-org/quantum-logical-framework/issues/221), [quantum-os#260](https://github.com/rhovision-org/quantum-os/issues/260))
 - [#12](https://github.com/rhovision-org/BYOID/issues/12) Capability-based authorization for shared data
 
 ## [M4 Assurance and usability](https://github.com/rhovision-org/BYOID/milestone/4)
