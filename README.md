@@ -95,6 +95,7 @@ Design notes: [architecture](docs/architecture.md) ·
 [DID method draft](docs/did-method.md) ·
 [Live OAuth setup](docs/oauth.md) ·
 [REV proof cards](docs/rev-proofs.md) ·
+[Rholang contract plan](docs/contracts.md) ·
 [Deploy on rhobot-2](docs/deploy-rhobot.md).
 
 ## Getting Started

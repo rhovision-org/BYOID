@@ -8,6 +8,7 @@ BYOID/
 ├── .github/workflows/    # GitHub Pages static demo deployment
 ├── docs/
 │   ├── architecture.md
+│   ├── contracts.md      # Rholang contract plan and FreeTrust extension point
 │   ├── did-method.md
 │   ├── oauth.md          # Google/GitHub/Facebook/Apple live setup
 │   ├── rev-proofs.md     # REV proof card format and lookup
