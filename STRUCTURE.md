@@ -4,6 +4,7 @@
 BYOID/
 ├── README.md
 ├── ROADMAP.md            # milestone-linked roadmap
+├── DECISIONS.md          # BYOID decision log
 ├── .env.example          # optional live OAuth / rholo settings
 ├── .github/workflows/    # GitHub Pages static demo deployment
 ├── docs/

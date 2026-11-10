@@ -91,6 +91,7 @@ OAuth needs a server to hold client secrets and sign attestations.
    community issue tracker.
 
 Roadmap: [ROADMAP.md](ROADMAP.md) ·
+Decisions: [DECISIONS.md](DECISIONS.md) ·
 Design notes: [architecture](docs/architecture.md) ·
 [DID method draft](docs/did-method.md) ·
 [Live OAuth setup](docs/oauth.md) ·
