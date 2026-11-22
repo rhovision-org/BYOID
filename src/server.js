@@ -172,10 +172,11 @@ async function publishRevProofCard(address, card) {
     throw new HttpError(413, 'proof-card-too-large', 'proof card is too large');
   }
   const name = revAnchorName(address);
-  const resultName = `byoid:rev:result:${randomBase64Url(8)}`;
-  const term =
-    `@"byoid:rev:registry"!("publish", "${address}", "${value}", "${resultName}") | ` +
-    `@"${name}"!("${value}")`;
+  // The hosted server deploys with its own key, and the v2 registry
+  // (contracts/rev-proof-registry.rho) accepts a card only from the key that
+  // owns the address, so the server writes the direct name alone. The static
+  // app indexes the card in the registry, signed by the REV key in the browser.
+  const term = `@"${name}"!("${value}")`;
   const submittedAt = new Date().toISOString();
   const submitted = await client.submitDeploy(term);
   const executed = await client.waitForDeploy(submitted.deployId);
@@ -203,6 +204,7 @@ async function publishRevProofCard(address, card) {
     blockNumber: executed.block.blockNumber,
     preStateHash: executed.block.preStateHash || null,
     postStateHash: executed.block.postStateHash || null,
+    registry: { status: 'not-indexed', uri: null, error: 'the hosted server cannot sign for your REV address' },
     term,
   };
 }

@@ -272,6 +272,7 @@ export class RholoWebClient {
     phloPrice = 1,
     fetchImpl = (input, init) => fetch(input, init),
     logger = console,
+    deployer = null,
   } = {}) {
     this.url = String(url).replace(/\/+$/, '');
     this.shardId = shardId;
@@ -282,7 +283,9 @@ export class RholoWebClient {
     this.phloPrice = phloPrice;
     this.fetchImpl = fetchImpl;
     this.logger = logger;
-    this.deployer = loadOrCreateDeployer();
+    // A caller-supplied deployer signs every deploy from this client; the REV
+    // proof registry needs the address owner's own key (rev-registry.js).
+    this.deployer = deployer ? deployerFromPrivateKey(deployer.privateKeyHex) : loadOrCreateDeployer();
     this._funded = loadFunded(this.deployer.address, this.url) ? Promise.resolve() : null;
     this._queue = Promise.resolve();
     this._network = null;

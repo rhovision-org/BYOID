@@ -1,35 +1,89 @@
-// BYOID public REV proof registry.
+// BYOID public REV proof registry, version 2.
 //
-// Deploy once per writable rholo network. The contract stores the latest
-// signed proof-card string for each REV address. Readers verify the DID and REV
-// signatures themselves; the contract is an index, not a trust anchor.
+// The contract stores the latest signed proof-card string for each REV
+// address. Readers still verify the DID and REV signatures themselves; the
+// contract is an index, not a trust anchor. What it adds is that only the key
+// that owns a REV address can change that address's entry (#14).
 //
-// Publish:
-//   @"byoid:rev:registry"!("publish", "<revAddress>", "<card>", "<resultName>")
-// Get:
-//   @"byoid:rev:registry"!("get", "<revAddress>", "unused", "<resultName>")
+// Install: deploy this file once per writable rholo network. It registers its
+// facets with rho:registry:insertArbitrary and answers the registry URI on the
+// deploy's rho:rchain:deployId, which scripts/deploy-rev-registry.js reads and
+// records in public/rev-registry.js. Version 1 listened on the public name
+// @"byoid:rev:registry", which anyone could also listen on; this version is
+// reached only through its URI.
 //
-// The result name is a public name chosen by the caller. The app also writes
-// the card to byoid:rev:<address> so reads do not require a deploy.
+// The URI resolves to {"publish": bundle+{…}, "read": bundle+{…}}. Calls:
+//
+//   publish (a signed deploy, so rho:rchain:deployerId exists):
+//     @publishFacet!(*deployerId, [address, card], *ret)
+//   read (an exploratory deploy is enough):
+//     @readFacet!([address], *ret)
+//
+// Every call answers on ret, a name the caller creates with `new`:
+//   {"ok": true}                          publish stored
+//   {"ok": true, "card": <String | Nil>}  read
+//   {"ok": false, "error": <String>}      refused; state is unchanged
+//
+// The patterns follow rhogov's rgov-core contracts, which were measured on
+// rholo: the caller's address is derived with fromDeployerId (a forged id
+// answers Nil, which never equals an address), and state is one cell that is
+// consumed and restored.
 
-new state in {
+new state, publishFacet, readFacet, uriCh,
+    revAddr(`rho:rev:address`),
+    insertArbitrary(`rho:registry:insertArbitrary`),
+    deployId(`rho:rchain:deployId`)
+in {
   state!({}) |
-  contract @"byoid:rev:registry"(@action, @address, @payload, @resultName) = {
-    match action {
-      "publish" => {
-        for (@store <- state) {
-          state!(store.set(address, payload)) |
-          @resultName!("OK")
-        }
-      }
-      "get" => {
-        for (@store <<- state) {
-          match store.get(address) {
-            Nil => { @resultName!("MISS") }
-            value => { @resultName!(value) }
+
+  contract publishFacet(_id, @args, ret) = {
+    match args {
+      [address, card] => {
+        match [address, card] {
+          [String, String] => {
+            match [address.length() >= 45, address.length() <= 60,
+                   card.length() > 0, card.length() <= 19000] {
+              [true, true, true, true] => {
+                new a in {
+                  revAddr!("fromDeployerId", *_id, *a) |
+                  for (@me <- a) {
+                    match me == address {
+                      true => {
+                        for (@store <- state) {
+                          state!(store.set(address, card)) |
+                          ret!({"ok": true})
+                        }
+                      }
+                      false => {
+                        ret!({"ok": false, "error": "only the key that owns this REV address may publish its card"})
+                      }
+                    }
+                  }
+                }
+              }
+              _ => { ret!({"ok": false, "error": "address must be 45-60 characters and the card 1-19000"}) }
+            }
           }
+          _ => { ret!({"ok": false, "error": "address and card must be strings"}) }
         }
       }
+      _ => { ret!({"ok": false, "error": "publish takes [address, card]"}) }
     }
+  } |
+
+  contract readFacet(@args, ret) = {
+    match args {
+      [address] => {
+        for (@store <<- state) {
+          ret!({"ok": true, "card": store.get(address)})
+        }
+      }
+      _ => { ret!({"ok": false, "error": "read takes [address]"}) }
+    }
+  } |
+
+  insertArbitrary!({"publish": bundle+{*publishFacet}, "read": bundle+{*readFacet}}, *uriCh) |
+  for (@uri <- uriCh) {
+    deployId!(["installed", "byoid-rev-registry", 2, uri])
   }
 }

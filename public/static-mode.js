@@ -36,6 +36,7 @@ import {
 import { PROVIDER_CATALOG, PROVIDER_IDS } from './provider-catalog.js';
 import { DEFAULT_NODE, nodeUrl } from './nodes.js';
 import { RholoWebClient, RholoWebError } from './rholo-web.js';
+import { MAX_CARD_CHARS, publishProgram, registryRefusal, registryUriFor } from './rev-registry.js';
 
 const WALLET_KEY = 'byoid.wallet.v1';
 const AGENT_ISSUER = 'byoid:agent';
@@ -339,6 +340,7 @@ function demoProfile(providerId, profileId) {
 
 export function createStaticBackend({
   getWallet = readWalletSnapshot,
+  getRevKey = async () => null,
   nodeUrl: initialNodeUrl = nodeUrl(DEFAULT_NODE),
 } = {}) {
   const client = new RholoWebClient({
@@ -617,26 +619,62 @@ export function createStaticBackend({
     };
   }
 
+  // The direct name byoid:rev:<address> is always written. When this node has a
+  // v2 registry (public/rev-registry-uris.js), the same deploy also indexes the
+  // card there, signed by the REV key itself, because the contract accepts a
+  // card only from the key that owns the address. Without a registry, or if
+  // the REV key cannot pay for the deploy, the phlo-payer key writes the
+  // direct name alone.
   async function publishRevProofCard(address, card) {
     if (!isRevAddress(address)) throw httpError(400, 'invalid-rev-address', 'invalid REV address');
     if (!card || typeof card !== 'object' || card.revAddress !== address) {
       throw httpError(400, 'invalid-proof-card', 'proof card does not match the REV address');
     }
     const value = b64url(utf8(JSON.stringify(card)));
-    if (value.length > 19_000) throw httpError(413, 'proof-card-too-large', 'proof card is too large');
+    if (value.length > MAX_CARD_CHARS) {
+      throw httpError(413, 'proof-card-too-large', 'proof card is too large');
+    }
     const name = revAnchorName(address);
-    const resultName = `byoid:rev:result:${randomB64url(8)}`;
-    const term =
-      `@"byoid:rev:registry"!("publish", "${address}", "${value}", "${resultName}") | ` +
-      `@"${name}"!("${value}")`;
     const submittedAt = new Date().toISOString();
-    const submitted = await client.submitDeploy(term);
-    const executed = await client.waitForDeploy(submitted.deployId);
-    if (executed.state !== 'success') {
-      throw new RholoWebError(`the REV proof deploy did not execute: ${executed.error || executed.state}`, {
-        code: 'rev-proof-not-executed',
-        body: JSON.stringify(executed),
-      });
+    const uri = registryUriFor(client.url);
+    const revKey = uri ? await getRevKey() : null;
+    let registry = { status: uri ? 'pending' : 'not-installed', uri, error: null };
+    let submitted = null;
+    let executed = null;
+    let term = null;
+
+    if (uri && revKey?.address === address) {
+      try {
+        const owner = new RholoWebClient({ url: client.url, faucet: true, logger: console, deployer: revKey });
+        term = publishProgram(uri, address, value);
+        submitted = await owner.submitDeploy(term);
+        executed = await owner.waitForDeploy(submitted.deployId);
+        if (executed.state !== 'success') {
+          throw new Error(`the deploy did not execute: ${executed.error || executed.state}`);
+        }
+        const refusal = registryRefusal(executed.result);
+        registry = refusal
+          ? { status: 'refused', uri, error: refusal }
+          : { status: 'indexed', uri, error: null };
+      } catch (error) {
+        registry = { status: 'failed', uri, error: error.message };
+        submitted = null;
+        executed = null;
+      }
+    } else if (uri) {
+      registry = { status: 'skipped', uri, error: 'the REV key for this address is not in this browser' };
+    }
+
+    if (!executed) {
+      term = `@"${name}"!("${value}")`;
+      submitted = await client.submitDeploy(term);
+      executed = await client.waitForDeploy(submitted.deployId);
+      if (executed.state !== 'success') {
+        throw new RholoWebError(`the REV proof deploy did not execute: ${executed.error || executed.state}`, {
+          code: 'rev-proof-not-executed',
+          body: JSON.stringify(executed),
+        });
+      }
     }
     const block = executed.block;
     const observed = await client.getDataAtName(name, block.blockHash);
@@ -658,6 +696,7 @@ export function createStaticBackend({
       blockNumber: block.blockNumber,
       preStateHash: block.preStateHash || null,
       postStateHash: block.postStateHash || null,
+      registry,
       term,
     };
   }

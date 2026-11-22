@@ -1,7 +1,8 @@
 # Rholang contract plan
 
-**Status:** design proposal, not implemented. The only deployed contract today
-is [`contracts/rev-proof-registry.rho`](../contracts/rev-proof-registry.rho).
+**Status:** design proposal, not implemented. The only contract today is
+[`contracts/rev-proof-registry.rho`](../contracts/rev-proof-registry.rho),
+whose version 2 applies rules 2, 3, 4 and 6 below.
 DID event logs are written to public names and verified entirely by clients.
 
 This plan names the contracts BYOID needs, the rules they share, and the
@@ -23,9 +24,11 @@ These apply to every BYOID contract.
    ([QLF PR #216](https://github.com/rhovision-org/quantum-logical-framework/pull/216), §3a).
 3. **Contracts are found by registry URI, not public string names.** Anyone
    can deploy a second listener on `@"byoid:rev:registry"` and consume its
-   calls. Registering with `rho:registry:insertSigned:secp256k1` gives a URI
-   only the BYOID release key can claim. Clients look it up with
-   `rho:registry:lookup`.
+   calls. `rho:registry:insertArbitrary` gives an unforgeable URI, which
+   the repo records per network and clients look up with
+   `rho:registry:lookup`; the REV proof registry does this. A later option is
+   `rho:registry:insertSigned:secp256k1`, which gives a URI only the BYOID
+   release key can claim, once there is a release key.
 4. **Replies go to a channel the caller creates.** Every method takes a
    `return` name from `new`, so results cannot be read or spoofed by others.
 5. **State grows where possible.** Attestations, approvals, revocations and
@@ -62,7 +65,7 @@ The plan below assumes the first option.
 | Recovery | Guardian set, threshold and delay per DID. Guardians approve with their own `deployerId`. After the delay, a threshold of approvals installs a new controller key unless the current key cancels | `did → {guardians, threshold, delayBlocks, pending}` | #3 |
 | Attestations | Signed claims by one DID about another. Records the attester key, counts distinct keys, keeps a withdrawal set | `subject → {attestation id → {body, attesterKeys}}` | #9, #18 |
 | Status list | Credential revocation by issuer, grow-only | `issuer → Set(credentialId)` | #6 |
-| REV proof registry | Existing contract, hardened: only the key that owns a REV address may publish its card | `revAddress → card` | #14 |
+| REV proof registry | Version 2: only the key that owns a REV address may publish its card; reached by registry URI | `revAddress → card` | #14 |
 
 Delays use block height from `rho:block:data`. Hashes use
 `rho:crypto:blake2b256Hash`. REV addresses come from `rho:rev:address`.
