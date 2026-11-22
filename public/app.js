@@ -92,7 +92,12 @@ const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 // GitHub Pages has no Node process. In static mode, API calls are served by a
 // browser-local backend that writes directly to the live rholo playground.
 const staticBackend = STATIC_MODE
-  ? createStaticBackend({ getWallet: () => state.wallet, nodeUrl: nodeUrl(state.node) })
+  ? createStaticBackend({
+      getWallet: () => state.wallet,
+      // Stays in this browser: it signs the registry deploy in static mode only.
+      getRevKey: () => ensureRevProofKey(),
+      nodeUrl: nodeUrl(state.node),
+    })
   : null;
 
 // ── formatting / small helpers ──────────────────────────────────────────────
@@ -1159,6 +1164,17 @@ async function buildCurrentProofCard() {
   return { ...body, didSignature, revSignature };
 }
 
+// What happened to the registry index, in a sentence for the publish toast.
+// The direct name was written either way, so lookups still find the card.
+function registryNote(registry) {
+  if (!registry || registry.status === 'not-installed') return '';
+  if (registry.status === 'indexed') return ' It is also indexed in the registry contract.';
+  if (registry.status === 'not-indexed') {
+    return ' This server cannot index it in the registry contract, because only your REV key may do that; lookups still find it.';
+  }
+  return ` It was not indexed in the registry contract (${registry.error || registry.status}); lookups still find it at its public name. Publish again to retry the index.`;
+}
+
 async function publishRevProofs() {
   if (!state.wallet) {
     toast({ kind: 'warn', title: 'Create your identity first', message: 'A REV proof card binds the address to a DID.' });
@@ -1199,9 +1215,11 @@ async function publishRevProofs() {
       toast({
         kind: 'ok',
         title: 'REV proof card published',
-        message: response.blockNumber
-          ? `Anchored in block ${response.blockNumber}.`
-          : 'The card is now readable at its public name.',
+        message: `${
+          response.blockNumber
+            ? `Anchored in block ${response.blockNumber}.`
+            : 'The card is now readable at its public name.'
+        }${registryNote(response.registry)}`,
       });
     } catch (error) {
       toast({ kind: 'bad', title: 'Could not publish the proof card', message: error.message });
@@ -2708,7 +2726,7 @@ function renderProofPublisher() {
         </button>
       </div>
       ${!links.length && state.wallet ? '<p class="small muted">Connect and anchor at least one provider first.</p>' : ''}
-      <p class="small muted">Rholang index: <span class="mono-inline">byoid:rev:registry</span> · direct lookup name: <span class="mono-inline">byoid:rev:&lt;address&gt;</span>.</p>
+      <p class="small muted">Rholang index: the registry contract at its registry URI, which only your REV key can update · direct lookup name: <span class="mono-inline">byoid:rev:&lt;address&gt;</span>.</p>
     </div>
   `;
 }
@@ -3272,7 +3290,7 @@ CHAIN_WRITES=false npm start</pre>
         </div>
         <div class="help-section" id="help-rev-proofs">
           <h3>Keybase-style proofs by REV address</h3>
-          <p>The Chain tab can publish a proof card that binds a secp256k1 REV address to your DID. The card is signed by both keys, lists the provider handles you choose to disclose, and is anchored at <code>byoid:rev:&lt;address&gt;</code>. A Rholang registry contract at <code>byoid:rev:registry</code> indexes the latest card. Lookups verify the signatures and every provider attestation before displaying a result.</p>
+          <p>The Chain tab can publish a proof card that binds a secp256k1 REV address to your DID. The card is signed by both keys, lists the provider handles you choose to disclose, and is anchored at <code>byoid:rev:&lt;address&gt;</code>. Where the network has the registry contract, the card is also indexed there, and only the REV key that owns the address can change its entry. Lookups verify the signatures and every provider attestation before displaying a result.</p>
           <a class="btn btn-ghost btn-sm" href="https://github.com/rhovision-org/BYOID/blob/main/docs/rev-proofs.md" target="_blank" rel="noopener">${uiIcon('external')} Proof-card specification</a>
         </div>
         <div class="help-section" id="help-issues">
@@ -3287,7 +3305,7 @@ CHAIN_WRITES=false npm start</pre>
             <li>A public tuple-space name is a bulletin board: anyone can write to it. Integrity comes from signatures and the hash-linked chain, and the resolver ignores invalid events, gaps and forks. A production DID method would use an unforgeable-name registry with a controller capability.</li>
             <li>Demo providers are simulations by design, not a bypass for real OAuth. Google, GitHub, Facebook and Apple demo attestations carry <code>demo: true</code>. Live OAuth requires the Node server.</li>
             <li>REV proof cards are public by design: the handles you publish become visible. The card proves control of the REV key and the DID, and every provider attestation is checked against an anchored link event.</li>
-            <li>The Rholang registry contract at <code>byoid:rev:registry</code> indexes the latest card per address. The app also mirrors cards at <code>byoid:rev:&lt;address&gt;</code>, so a lookup is a read and does not require a deploy.</li>
+            <li>The Rholang registry contract indexes the latest card per address. It is reached by its registry URI rather than a public name, and it accepts a card only from a deploy signed by the key that owns the address. The app also mirrors cards at <code>byoid:rev:&lt;address&gt;</code>, so a lookup is a read and does not require a deploy.</li>
             <li>This is a POC, not an audited identity system. The wallet key is extractable so you can back it up; treat the browser as sensitive.</li>
           </ul>
         </div>

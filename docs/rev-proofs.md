@@ -54,21 +54,49 @@ except `didSignature` and `revSignature`.
 - Direct card name: `byoid:rev:<revAddress>`. The app writes the base64url JSON
   card here and reads all cards from this name. A public name is a bulletin
   board; readers verify signatures and ignore invalid values.
-- Rholang index: `byoid:rev:registry`. The contract in
+- Rholang index: the contract in
   [`contracts/rev-proof-registry.rho`](../contracts/rev-proof-registry.rho)
-  stores the latest card string per address for Rholang consumers. Publishing
-  writes the contract index and the direct name in one deploy.
+  (version 2) stores the latest card string per address for Rholang
+  consumers. It is registered with `rho:registry:insertArbitrary`, and each
+  network's URI is recorded in
+  [`public/rev-registry-uris.js`](../public/rev-registry-uris.js).
 
-Contract calls:
+The registry resolves to two facets. Program builders are in
+[`public/rev-registry.js`](../public/rev-registry.js).
 
 ```rholang
-@"byoid:rev:registry"!("publish", "<address>", "<card>", "<resultName>")
-@"byoid:rev:registry"!("get", "<address>", "unused", "<resultName>")
+// In a deploy signed by the REV key that owns <address>:
+@publishFacet!(*deployerId, ["<address>", "<card>"], *ret)
+// In any deploy:
+@readFacet!(["<address>"], *ret)
 ```
 
-`resultName` is a public name chosen by the caller, so concurrent reads do not
-need a shared response channel. The contract peeks at its state for `get` and
-replaces the state map for `publish`.
+- **Only the owner publishes.** The contract derives the caller's REV address
+  from `rho:rchain:deployerId` with `rho:rev:address` and refuses any other
+  address. A forged deployer id derives `Nil`, which matches nothing.
+- **No public listener.** Version 1 listened on `@"byoid:rev:registry"`, where
+  anyone could add a second listener and take calls. Version 2 is reached only
+  through its URI.
+- **Private answers.** Replies go to a `ret` the caller creates with `new`:
+  `{"ok": true}`, `{"ok": true, "card": …}` or `{"ok": false, "error": …}`.
+  The programs forward the answer to `rho:rchain:deployId`.
+- **Fail closed.** Non-string arguments, an address outside 45–60 characters,
+  or a card over 19,000 characters are refused before state is touched.
+
+The static app (GitHub Pages) signs the publish deploy with the REV key in the
+browser, funded by the network's faucet, and writes the direct name in the same
+deploy. The hosted server deploys with its own key, so it writes the direct
+name only. Without a registry URI for the network, the app writes the direct
+name only.
+
+The direct name `byoid:rev:<address>` is not owner-only: any deploy can send to
+it, and a publish refused by the registry still writes it. Readers therefore
+verify every card's signatures, and only the registry entry is tied to the
+owning key.
+
+The v1 contract is still listening on `@"byoid:rev:registry"` on the
+playground. Nothing in BYOID calls it any more; its entries are not migrated,
+because each card is re-indexed the next time its owner publishes.
 
 ## Deploying the registry
 
@@ -84,8 +112,9 @@ read-only snapshot, so the contract cannot be deployed there; the direct
 `byoid:rev:<address>` cards are still readable if they were written on that
 chain.
 
-The script probes the contract first and skips deployment when it already
-answers. If a network accepts the deploy into its pool but does not propose it,
+The script probes the recorded URI first and skips installation when the
+registry already answers. After an install it writes the new URI to
+`public/rev-registry-uris.js`; commit that file so the app uses it. If a network accepts the deploy into its pool but does not propose it,
 the script records the registry as unavailable and the app falls back to direct
 card names, which do not require a contract call.
 

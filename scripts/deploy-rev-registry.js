@@ -13,12 +13,16 @@ import { fileURLToPath } from 'node:url';
 
 import { RholoClient } from '../src/rholo.js';
 import { loadOrCreateDeployerKey } from '../src/store.js';
-import { randomBase64Url } from '../src/crypto.js';
+import { installedUri, readProgram, registryRefusal } from '../public/rev-registry.js';
+import { REV_REGISTRY_URIS } from '../public/rev-registry-uris.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..');
 const contractPath = path.join(root, 'contracts', 'rev-proof-registry.rho');
 const deploymentsPath = path.join(root, 'contracts', 'deployments.json');
+const urisPath = path.join(root, 'public', 'rev-registry-uris.js');
+// A valid REV address that no one publishes for, used only to probe.
+const PROBE_ADDRESS = '1111AtahZeefej4tvVR6ti9TJtv8yxLebT31SCEVDCKMNikBk5r3g';
 const url = String(
   process.argv[2] || process.env.RHOLO_URL || 'https://playground.rhobot.net',
 ).replace(/\/+$/, '');
@@ -38,15 +42,15 @@ const client = new RholoClient({
   logger: console,
 });
 
-async function probe() {
-  const resultName = `byoid:rev:probe:${randomBase64Url(8)}`;
-  const term = `@"byoid:rev:registry"!("get", "__byoid_probe__", "x", "${resultName}")`;
+// Ask the recorded registry for a card that does not exist. A healthy v2
+// registry answers {"ok": true, "card": Nil}; anything else means reinstall.
+async function probe(uri) {
+  if (!uri) return false;
   try {
-    const submitted = await client.submitDeploy(term);
+    const submitted = await client.submitDeploy(readProgram(uri, PROBE_ADDRESS));
     const executed = await client.waitForDeploy(submitted.deployId, { timeoutMs: 30_000 });
     if (executed.state !== 'success') return false;
-    const read = await client.readName(resultName);
-    return read.values.length > 0;
+    return !registryRefusal(executed.result) && JSON.stringify(executed.result).includes('ok');
   } catch (error) {
     console.warn(`[registry] probe failed: ${error.message}`);
     return false;
@@ -69,11 +73,12 @@ let status = 'existing';
 let deployId = null;
 let blockNumber = null;
 let error = null;
-if (await probe()) {
-  console.log('[registry] contract already responds at byoid:rev:registry');
+let uri = REV_REGISTRY_URIS[url] || null;
+if (await probe(uri)) {
+  console.log(`[registry] v2 registry already answers at ${uri}`);
 } else {
   const source = fs.readFileSync(contractPath, 'utf8');
-  console.log(`[registry] deploying ${source.length} byte Rholang contract…`);
+  console.log(`[registry] installing ${source.length} byte Rholang contract…`);
   try {
     const submitted = await client.submitDeploy(source);
     deployId = submitted.deployId;
@@ -82,16 +87,30 @@ if (await probe()) {
       throw new Error(`contract deploy did not succeed: ${executed.error || executed.state}`);
     }
     blockNumber = executed.block.blockNumber ?? null;
-    if (!(await probe())) {
-      throw new Error('contract deployed but the probe did not return a value');
+    uri = installedUri(executed.result);
+    if (!uri) throw new Error('the install deploy did not answer a registry URI');
+    if (!(await probe(uri))) {
+      throw new Error(`contract installed at ${uri} but the probe did not answer`);
     }
     status = 'deployed';
-    console.log(`[registry] deployed in block ${blockNumber}`);
+    console.log(`[registry] installed at ${uri} in block ${blockNumber}`);
   } catch (caught) {
     status = 'unavailable';
     error = caught.message;
+    uri = null;
     console.warn(`[registry] contract unavailable on this network: ${error}`);
   }
+}
+
+if (uri) {
+  const uris = { ...REV_REGISTRY_URIS, [url]: uri };
+  const body = JSON.stringify(uris, null, 2);
+  const text = fs.readFileSync(urisPath, 'utf8');
+  fs.writeFileSync(
+    urisPath,
+    text.replace(/export const REV_REGISTRY_URIS = [\s\S]*?;\n/, `export const REV_REGISTRY_URIS = ${body};\n`),
+  );
+  console.log(`[registry] wrote ${path.relative(root, urisPath)}`);
 }
 
 const existing = fs.existsSync(deploymentsPath)
@@ -101,7 +120,9 @@ const previous = existing[url] || {};
 existing[url] = {
   ...previous,
   url,
-  contract: 'byoid:rev:registry',
+  contract: 'contracts/rev-proof-registry.rho',
+  version: 2,
+  uri: uri || null,
   status,
   error,
   deployId: deployId || previous.deployId || null,
