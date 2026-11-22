@@ -1,13 +1,16 @@
 {
   "https://playground.rhobot.net": {
     "url": "https://playground.rhobot.net",
-    "contract": "byoid:rev:registry",
-    "status": "existing",
-    "deployId": null,
-    "blockNumber": null,
+    "contract": "contracts/rev-proof-registry.rho",
+    "status": "deployed",
+    "deployId": "3044022038747e0c923237c27d9ed81b0542ce9d61348134746b0b517877aaca97c5848b022033e48c2c65f0b260c8f209a896c89572ca5b9f7157603bce66354ca5b6ead51a",
+    "blockNumber": 6414,
     "networkId": "playground",
     "shardId": "/playground",
-    "checkedAt": "2026-11-08T17:33:50.899Z"
+    "checkedAt": "2026-11-22T15:21:30.107Z",
+    "version": 2,
+    "uri": "rho:id:j9w4zceqomwzuf9nafxbqp1yudbc7jpw6orhhxy6gmt7ssamn3eo",
+    "error": null
   },
   "https://testnet.rhobot.net": {
     "url": "https://testnet.rhobot.net",

@@ -89,6 +89,11 @@ deploy. The hosted server deploys with its own key, so it writes the direct
 name only. Without a registry URI for the network, the app writes the direct
 name only.
 
+The direct name `byoid:rev:<address>` is not owner-only: any deploy can send to
+it, and a publish refused by the registry still writes it. Readers therefore
+verify every card's signatures, and only the registry entry is tied to the
+owning key.
+
 The v1 contract is still listening on `@"byoid:rev:registry"` on the
 playground. Nothing in BYOID calls it any more; its entries are not migrated,
 because each card is re-indexed the next time its owner publishes.

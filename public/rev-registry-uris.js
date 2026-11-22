@@ -5,4 +5,6 @@
 // A network with no URI here has no v2 registry yet. The app then writes proof
 // cards to their direct name, byoid:rev:<address>, and skips the index.
 
-export const REV_REGISTRY_URIS = {};
+export const REV_REGISTRY_URIS = {
+  "https://playground.rhobot.net": "rho:id:j9w4zceqomwzuf9nafxbqp1yudbc7jpw6orhhxy6gmt7ssamn3eo"
+};
